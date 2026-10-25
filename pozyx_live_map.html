@@ -71,6 +71,8 @@
   .recrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
   .recrow .when { flex: 1; font-variant-numeric: tabular-nums; }
   .recrow .meta { color: var(--muted); font-size: 13px; }
+  button.danger { color: var(--danger); border-color: var(--danger); }
+  button.danger:disabled { color: var(--muted); border-color: var(--border); }
   .dlgfoot { display: flex; justify-content: flex-end; margin-top: 12px; }
   .rname { font-size: 12px; color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
@@ -148,6 +150,7 @@
   <div style="display:flex; gap:8px; align-items:center">
     <label for="dbSession">Session</label>
     <select id="dbSession"></select>
+    <button id="btnDelSession" class="danger" title="Deletes the session with all its recordings and phone taps">Delete session</button>
   </div>
   <div id="dbRecList" class="reclist"></div>
   <div class="dlgfoot"><button id="btnDbClose">Close</button></div>
@@ -719,7 +722,7 @@ function tapMarksToDraw() {
 
 /* ---------- replay from the database ---------- */
 async function openDbDialog() {
-  $('dbDialog').showModal();
+  if (!$('dbDialog').open) $('dbDialog').showModal();
   $('dbRecList').innerHTML = '<div class="empty">Loading sessions…</div>';
   await loadSessions();
   let h = '';
@@ -733,6 +736,7 @@ const sessionFilter = (sid) => sid ? `session_id=eq.${encodeURIComponent(sid)}` 
 let dbRecs = [];
 async function loadRecList() {
   const sid = $('dbSession').value, list = $('dbRecList');
+  $('btnDelSession').disabled = !sid;
   list.innerHTML = '<div class="empty">Loading recordings…</div>';
   try {
     dbRecs = await pozyxDb.request(`recordings?select=id,started_at_unix_ms,duration_s&${sessionFilter(sid)}&order=started_at_unix_ms.desc`);
@@ -744,9 +748,47 @@ async function loadRecList() {
   list.innerHTML = dbRecs.map((r, i) => {
     const d = new Date(+r.started_at_unix_ms);
     return `<div class="recrow"><span class="when">${d.toLocaleDateString()} ${clockTime(+r.started_at_unix_ms).slice(0, 8)}</span>` +
-      `<span class="meta">${(+r.duration_s || 0).toFixed(1)} s</span><button data-i="${i}" class="primary">Replay</button></div>`;
+      `<span class="meta">${(+r.duration_s || 0).toFixed(1)} s</span><button data-i="${i}" class="primary">Replay</button>` +
+      `<button data-del="${i}" class="danger" title="Delete this recording">Delete</button></div>`;
   }).join('');
 }
+// Deletes rows and returns how many went; 0 when the database does not allow deleting yet.
+async function deleteRows(table, filter) {
+  const rows = await pozyxDb.request(`${table}?${filter}&select=*`, { method: 'DELETE', prefer: 'return=representation' });
+  return Array.isArray(rows) ? rows.length : 0;
+}
+const NO_DELETE = 'The database does not allow deleting yet: run the updated supabase/schema.sql in Supabase, then try again.';
+
+async function deleteRecording(r) {
+  const when = `${new Date(+r.started_at_unix_ms).toLocaleDateString()} ${clockTime(+r.started_at_unix_ms).slice(0, 8)}`;
+  if (!confirm(`Delete the recording from ${when} (${(+r.duration_s || 0).toFixed(1)} s) and all its positions?\n\nThis cannot be undone.`)) return;
+  try {
+    if (!await deleteRows('recordings', `id=eq.${encodeURIComponent(r.id)}`)) throw new Error(NO_DELETE);
+    setStatus(`Deleted the recording from ${when}.`);
+  } catch (e) {
+    setStatus(`Could not delete the recording: ${e.message}`, true);
+  }
+  loadRecList();
+}
+
+async function deleteSession() {
+  const sid = $('dbSession').value;
+  const x = dbSessions.find(q => q.id === sid);
+  if (!x) return;
+  if (!confirm(`Delete the session "${x.name}"?\n\nThis also deletes its ${dbRecs.length} recording${dbRecs.length === 1 ? '' : 's'}, their positions, and the phone taps saved in it. This cannot be undone.`)) return;
+  try {
+    const f = `session_id=eq.${encodeURIComponent(sid)}`;
+    await deleteRows('recordings', f);
+    await deleteRows('taps', f);
+    if (!await deleteRows('sessions', `id=eq.${encodeURIComponent(sid)}`)) throw new Error(NO_DELETE);
+    if (sessionId === sid) pickSession('');
+    setStatus(`Deleted the session "${x.name}".`);
+  } catch (e) {
+    setStatus(`Could not delete the session: ${e.message}`, true);
+  }
+  openDbDialog();
+}
+
 async function replayFromDb(r) {
   const sid = $('dbSession').value;
   const sesName = sid ? (dbSessions.find(x => x.id === sid) || {}).name || sid : 'No session';
@@ -1216,7 +1258,12 @@ $('tapShift').addEventListener('input', () => {
 $('btnOpenDb').onclick = openDbDialog;
 $('btnDbClose').onclick = () => $('dbDialog').close();
 $('dbSession').onchange = loadRecList;
-$('dbRecList').onclick = (e) => { const b = e.target.closest('button[data-i]'); if (b) replayFromDb(dbRecs[+b.dataset.i]); };
+$('dbRecList').onclick = (e) => {
+  const b = e.target.closest('button[data-i]'), d = e.target.closest('button[data-del]');
+  if (b) replayFromDb(dbRecs[+b.dataset.i]);
+  if (d) deleteRecording(dbRecs[+d.dataset.del]);
+};
+$('btnDelSession').onclick = deleteSession;
 $('tapMarks').onclick = (e) => { const b = e.target.closest('button[data-i]'); if (b) jumpToTap(+b.dataset.i); };
 $('tapsTable').onclick = (e) => { const r = e.target.closest('tr[data-i]'); if (r) jumpToTap(+r.dataset.i); };
 $('sessionSel').onchange = () => pickSession($('sessionSel').value);

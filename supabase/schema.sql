@@ -109,3 +109,10 @@ create or replace function server_time_ms() returns double precision
 grant execute on function server_time_ms() to anon;
 alter table taps       add column if not exists clock_offset_ms double precision;  -- correction applied (ms)
 alter table recordings add column if not exists clock_offset_ms double precision;
+
+-- Deleting from the live map (Saved sessions → Delete). Deleting a recording also deletes its
+-- positions and anchors (on delete cascade above).
+drop policy if exists "pages delete" on sessions;
+drop policy if exists "pages delete" on recordings;
+create policy "pages delete" on sessions   for delete to anon using (true);
+create policy "pages delete" on recordings for delete to anon using (true);

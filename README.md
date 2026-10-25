@@ -86,6 +86,10 @@ Both pages save to a Supabase database set in `pozyx_db.js`.
    timeline, in a "Phone taps" list (click one to jump there), as a flash
    while playing, and as diamonds on the map where the tag was at each tap.
 
+6. To clean up: in **Saved sessions**, **Delete** removes one recording;
+   **Delete session** removes the session with all its recordings,
+   positions and phone taps. Both ask first and cannot be undone.
+
 Tables: `sessions`, `recordings`, `anchors`, `positions`, `taps`. Taps and
 recordings carry the `session_id`; positions belong to a recording. See
 `supabase/sync_examples.sql` for queries that line taps up with positions.
