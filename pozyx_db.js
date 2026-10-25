@@ -7,7 +7,7 @@
 // Leave them empty to run both pages without a database.
 window.POZYX_DB = {
   url: 'https://aawyndzgltaqrhcdwqfi.supabase.co',
-  key: '',
+  key: 'sb_publishable_AE8aSJSJV0Jh1HZINeai-A_IykYcd_Z',
 };
 
 window.pozyxDb = {
