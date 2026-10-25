@@ -81,6 +81,11 @@ Both pages save to a Supabase database set in `pozyx_db.js`.
 4. Laptop: **Record** / **Stop**. The recording uploads to the selected session
    (or click **Upload** to retry).
 
+5. Later: **Saved sessions** → pick the session and a recording → **Replay**.
+   The phone taps made during that recording appear as markers on the
+   timeline, in a "Phone taps" list (click one to jump there), as a flash
+   while playing, and as diamonds on the map where the tag was at each tap.
+
 Tables: `sessions`, `recordings`, `anchors`, `positions`, `taps`. Taps and
 recordings carry the `session_id`; positions belong to a recording. See
 `supabase/sync_examples.sql` for queries that line taps up with positions.

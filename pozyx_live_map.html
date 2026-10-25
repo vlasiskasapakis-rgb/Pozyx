@@ -8,13 +8,13 @@
   :root {
     --bg: #f6f5f1; --panel: #ffffff; --text: #1f1e1b; --muted: #6b6a64;
     --border: #dedcd4; --grid: #ebe9e2; --grid-strong: #d3d1c7;
-    --accent: #0f6e56; --accent-text: #ffffff; --anchor: #1d9e75; --danger: #a32d2d;
+    --accent: #0f6e56; --accent-text: #ffffff; --anchor: #1d9e75; --danger: #a32d2d; --tap: #b4531a;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #1b1b19; --panel: #242422; --text: #ecebe6; --muted: #a3a29b;
       --border: #3a3936; --grid: #2c2c2a; --grid-strong: #444441;
-      --accent: #5dcaa5; --accent-text: #04342c; --anchor: #5dcaa5; --danger: #f09595;
+      --accent: #5dcaa5; --accent-text: #04342c; --anchor: #5dcaa5; --danger: #f09595; --tap: #f0a868;
     }
   }
   * { box-sizing: border-box; }
@@ -52,6 +52,24 @@
   #sessionSel { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); max-width: 220px; }
   .replay select { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
   .rtime { font-size: 13px; font-variant-numeric: tabular-nums; min-width: 90px; }
+  .seekwrap { position: relative; flex: 1; min-width: 160px; display: flex; }
+  .tapmarks { position: absolute; left: 8px; right: 8px; top: -7px; height: 10px; }
+  .tapmarks button { position: absolute; top: 0; width: 7px; height: 11px; margin-left: -3px; padding: 0; border: 0; border-radius: 2px; background: var(--tap); cursor: pointer; }
+  .mapcard { position: relative; }
+  .tapflash { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: var(--tap); color: var(--panel); padding: 6px 14px; border-radius: 999px; font-size: 14px; font-weight: 600; pointer-events: none; white-space: nowrap; }
+  #tapsTable tr { cursor: pointer; }
+  #tapsTable tr.past td { color: var(--muted); }
+  #tapsTable tr:hover td { background: var(--grid); }
+  .tapdot { display: inline-block; width: 9px; height: 9px; transform: rotate(45deg); background: var(--tap); margin-right: 8px; vertical-align: middle; }
+  dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); padding: 16px; width: min(560px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, .35); }
+  dialog h2 { font-size: 16px; color: var(--text); margin: 0 0 12px; }
+  dialog select { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); flex: 1; min-width: 0; }
+  .reclist { margin-top: 12px; max-height: 50vh; overflow: auto; }
+  .recrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .recrow .when { flex: 1; font-variant-numeric: tabular-nums; }
+  .recrow .meta { color: var(--muted); font-size: 13px; }
+  .dlgfoot { display: flex; justify-content: flex-end; margin-top: 12px; }
   .rname { font-size: 12px; color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
@@ -72,17 +90,22 @@
   <button id="btnUpload" disabled hidden title="Saves the last recording to the database">Upload</button>
   <button id="btnOpen">Open recording</button>
   <input type="file" id="fileOpen" accept=".json,.csv" hidden>
+  <button id="btnOpenDb" hidden title="Replay a recording from the database, with the phone taps">Saved sessions</button>
   <label><input type="checkbox" id="chkSmooth" checked> Smoothing</label>
   <label><input type="checkbox" id="chkTrail" checked> Trails</label>
   <div id="status" class="status">Not connected. Close the Arduino IDE Serial Monitor first, then click Connect (Chrome or Edge).</div>
 </header>
 
 <main>
-  <div class="card">
+  <div class="card mapcard">
+    <div id="tapFlash" class="tapflash" hidden></div>
     <svg id="map" role="img" aria-label="Map of anchors and tags"></svg>
     <div id="replayBar" class="replay" hidden>
       <button id="btnPlay">Pause</button>
-      <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Replay position">
+      <div class="seekwrap">
+        <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Replay position">
+        <div id="tapMarks" class="tapmarks"></div>
+      </div>
       <span id="replayTime" class="rtime">0.0 / 0.0 s</span>
       <select id="speed" aria-label="Replay speed">
         <option value="0.25">0.25×</option>
@@ -96,6 +119,10 @@
     </div>
   </div>
   <div class="side">
+    <div class="card" id="tapsCard" hidden>
+      <h2>Phone taps</h2>
+      <div id="tapsTable"></div>
+    </div>
     <div class="card">
       <h2>Tags</h2>
       <div id="tagTable"><div class="empty">No tag positions yet.</div></div>
@@ -110,6 +137,16 @@
     </div>
   </div>
 </main>
+
+<dialog id="dbDialog">
+  <h2>Saved sessions</h2>
+  <div style="display:flex; gap:8px; align-items:center">
+    <label for="dbSession">Session</label>
+    <select id="dbSession"></select>
+  </div>
+  <div id="dbRecList" class="reclist"></div>
+  <div class="dlgfoot"><button id="btnDbClose">Close</button></div>
+</dialog>
 
 <script src="pozyx_db.js"></script>
 <script>
@@ -423,7 +460,7 @@ async function loadSessions() {
 }
 function renderSessions() {
   const sel = $('sessionSel');
-  sel.hidden = $('btnNewSession').hidden = !hasDb();
+  sel.hidden = $('btnNewSession').hidden = $('btnOpenDb').hidden = !hasDb();
   let h = '<option value="">No session</option>';
   for (const x of dbSessions) h += `<option value="${esc(x.id)}">${esc(x.name)}</option>`;
   sel.innerHTML = h;
@@ -453,7 +490,12 @@ async function newSession() {
 }
 
 /* ---------- replay ---------- */
-const replay = { active: false, data: null, name: '', playing: false, t: 0, idx: 0, lastFrame: 0 };
+const replay = { active: false, data: null, name: '', playing: false, t: 0, idx: 0, lastFrame: 0, lastT: 0 };
+// Clock time of a moment, e.g. 16:03:22.517
+function clockTime(ms) {
+  const d = new Date(ms), p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
 
 function parseRecording(text, name) {
   let anchorsOut = [], samples = [];
@@ -495,9 +537,11 @@ function startReplay(data, name) {
   $('replayBar').hidden = false;
   $('replayName').textContent = name;
   $('seek').max = Math.max(1, Math.round(data.duration * 1000));
+  prepareTaps(data);
   $('btnRec').disabled = true;
   $('btnDemo').disabled = true;
-  setStatus(`Replaying "${name}" (${data.samples.length} positions, ${data.duration.toFixed(1)} s). Live data is paused.`);
+  const nt = (data.taps || []).length;
+  setStatus(`Replaying "${name}" (${data.samples.length} positions, ${data.duration.toFixed(1)} s${data.taps ? `, ${nt} phone tap${nt === 1 ? '' : 's'}` : ''}). Live data is paused.`);
   seekTo(0);
   replay.playing = true;
   replay.lastFrame = performance.now();
@@ -514,7 +558,9 @@ function replayTick(now) {
       replay.playing = false;
     }
     advanceTo(replay.t);
+    for (const tp of replay.data.taps || []) if (tp.t > replay.lastT && tp.t <= replay.t) flashTap(tp);
   }
+  replay.lastT = replay.t;
   replay.lastFrame = now;
   updateReplayUI();
   requestAnimationFrame(replayTick);
@@ -537,6 +583,8 @@ function seekTo(t) {
   while (i < s.length && s[i].t <= replay.t) i++;
   replay.idx = Math.max(0, i - TRAIL_LEN * 3);   // re-feed recent history for trails
   advanceTo(replay.t);
+  replay.lastT = replay.t;
+  renderTapTable();
   scheduleDraw();
 }
 
@@ -544,13 +592,19 @@ function updateReplayUI() {
   if (!replay.active) return;
   $('btnPlay').textContent = replay.playing ? 'Pause' : 'Play';
   if (!seeking) $('seek').value = Math.round(replay.t * 1000);
-  $('replayTime').textContent = `${replay.t.toFixed(1)} / ${replay.data.duration.toFixed(1)} s`;
+  const clock = replay.data.startUnix ? clockTime(replay.data.startUnix + replay.t * 1000) + ' · ' : '';
+  $('replayTime').textContent = `${clock}${replay.t.toFixed(1)} / ${replay.data.duration.toFixed(1)} s`;
+  const passed = (replay.data.taps || []).filter(tp => tp.t <= replay.t).length;
+  if (passed !== replay.tapsPassed) { replay.tapsPassed = passed; renderTapTable(); }
 }
 
 function exitReplay() {
   replay.active = false;
   replay.playing = false;
   $('replayBar').hidden = true;
+  $('tapsCard').hidden = true;
+  $('tapFlash').hidden = true;
+  $('tapMarks').innerHTML = '';
   $('btnRec').disabled = false;
   $('btnDemo').disabled = false;
   anchors.clear();
@@ -561,6 +615,127 @@ function exitReplay() {
 }
 
 let seeking = false;
+
+/* ---------- phone taps in replay ---------- */
+// For each tap: where every tag was at that moment (nearest position within 1 s).
+function prepareTaps(data) {
+  const taps = data.taps || [];
+  const byTag = new Map();
+  for (const q of data.samples) { if (!byTag.has(q.id)) byTag.set(q.id, []); byTag.get(q.id).push(q); }
+  for (const tp of taps) {
+    tp.marks = [];
+    for (const list of byTag.values()) {
+      let lo = 0, hi = list.length - 1;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid].t < tp.t) lo = mid + 1; else hi = mid; }
+      let best = list[lo];
+      if (lo > 0 && Math.abs(list[lo - 1].t - tp.t) < Math.abs(best.t - tp.t)) best = list[lo - 1];
+      if (best && Math.abs(best.t - tp.t) <= 1) tp.marks.push({ x: best.x * 1000, y: best.y * 1000, z: best.z * 1000 });
+    }
+  }
+  const dur = Math.max(data.duration, 0.001);
+  $('tapMarks').innerHTML = taps.map((tp, i) =>
+    `<button style="left:${(Math.max(0, Math.min(1, tp.t / dur)) * 100).toFixed(3)}%" data-i="${i}" title="${esc(tapText(tp))}" aria-label="Jump to tap ${i + 1}"></button>`).join('');
+  $('tapsCard').hidden = !data.taps;
+  replay.tapsPassed = -1;
+  renderTapTable();
+}
+function tapText(tp) { return `${tp.label ? tp.label + ' · ' : ''}${clockTime(tp.unix_ms)}`; }
+function renderTapTable() {
+  const taps = (replay.data && replay.data.taps) || [];
+  if (!taps.length) { $('tapsTable').innerHTML = '<div class="empty">No phone taps during this recording.</div>'; return; }
+  let h = '<table><tr><th>#</th><th>Time</th><th>t (s)</th><th>Label</th></tr>';
+  taps.forEach((tp, i) => {
+    h += `<tr data-i="${i}"${tp.t <= replay.t ? ' class="past"' : ''}><td><span class="tapdot"></span>${i + 1}</td>` +
+      `<td class="num">${clockTime(tp.unix_ms)}</td><td class="num">${tp.t.toFixed(2)}</td><td>${esc(tp.label || '')}</td></tr>`;
+  });
+  $('tapsTable').innerHTML = h + '</table>';
+}
+function jumpToTap(i) {
+  const tp = replay.data.taps[i];
+  if (!tp) return;
+  replay.playing = false;
+  seekTo(tp.t);
+  updateReplayUI();
+  flashTap(tp);
+}
+let flashTimer = null;
+function flashTap(tp) {
+  const el = $('tapFlash');
+  el.textContent = 'Tap · ' + tapText(tp);
+  el.hidden = false;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { el.hidden = true; }, 1500);
+}
+// Taps already passed in the replay, as markers on the map
+function tapMarksToDraw() {
+  if (!replay.active || !replay.data.taps) return [];
+  const out = [];
+  for (const tp of replay.data.taps) if (tp.t <= replay.t) for (const m of tp.marks) out.push({ ...m, label: tp.label });
+  return out;
+}
+
+/* ---------- replay from the database ---------- */
+async function openDbDialog() {
+  $('dbDialog').showModal();
+  $('dbRecList').innerHTML = '<div class="empty">Loading sessions…</div>';
+  await loadSessions();
+  let h = '';
+  for (const x of dbSessions) h += `<option value="${esc(x.id)}">${esc(x.name)}</option>`;
+  h += '<option value="">No session</option>';
+  $('dbSession').innerHTML = h;
+  $('dbSession').value = dbSessions.some(x => x.id === sessionId) ? sessionId : (dbSessions[0] ? dbSessions[0].id : '');
+  loadRecList();
+}
+const sessionFilter = (sid) => sid ? `session_id=eq.${encodeURIComponent(sid)}` : 'session_id=is.null';
+let dbRecs = [];
+async function loadRecList() {
+  const sid = $('dbSession').value, list = $('dbRecList');
+  list.innerHTML = '<div class="empty">Loading recordings…</div>';
+  try {
+    dbRecs = await pozyxDb.request(`recordings?select=id,started_at_unix_ms,duration_s&${sessionFilter(sid)}&order=started_at_unix_ms.desc`);
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Could not load recordings: ${esc(e.message)}</div>`;
+    return;
+  }
+  if (!dbRecs.length) { list.innerHTML = '<div class="empty">No recordings in this session yet.</div>'; return; }
+  list.innerHTML = dbRecs.map((r, i) => {
+    const d = new Date(+r.started_at_unix_ms);
+    return `<div class="recrow"><span class="when">${d.toLocaleDateString()} ${clockTime(+r.started_at_unix_ms).slice(0, 8)}</span>` +
+      `<span class="meta">${(+r.duration_s || 0).toFixed(1)} s</span><button data-i="${i}" class="primary">Replay</button></div>`;
+  }).join('');
+}
+async function replayFromDb(r) {
+  const sid = $('dbSession').value;
+  const sesName = sid ? (dbSessions.find(x => x.id === sid) || {}).name || sid : 'No session';
+  $('dbDialog').close();
+  setStatus('Loading the recording from the database…');
+  try {
+    const rid = encodeURIComponent(r.id);
+    const start = +r.started_at_unix_ms, end = start + (+r.duration_s || 0) * 1000;
+    const anchorRows = await pozyxDb.request(`anchors?select=anchor_id,x,y,z&recording_id=eq.${rid}`);
+    const pos = [];
+    for (let off = 0; ; off += 1000) {
+      const page = await pozyxDb.request(`positions?select=tag,unix_ms,x,y,z&recording_id=eq.${rid}&order=unix_ms.asc&limit=1000&offset=${off}`);
+      pos.push(...page);
+      if (page.length < 1000) break;
+      setStatus(`Loading the recording from the database… ${pos.length} positions`);
+    }
+    const tapRows = await pozyxDb.request(`taps?select=unix_ms,label&${sessionFilter(sid)}&unix_ms=gte.${start}&unix_ms=lte.${Math.ceil(end)}&order=unix_ms.asc`);
+    const samples = pos.map(q => ({ t: (+q.unix_ms - start) / 1000, id: String(q.tag).toUpperCase(), x: +q.x, y: +q.y, z: +q.z }))
+      .filter(q => [q.t, q.x, q.y, q.z].every(Number.isFinite)).sort((a, b) => a.t - b.t);
+    if (!samples.length) throw new Error('this recording has no positions');
+    const data = {
+      anchors: anchorRows.map(a => ({ id: String(a.anchor_id).toUpperCase(), x: +a.x, y: +a.y, z: +a.z })),
+      samples,
+      duration: Math.max(+r.duration_s || 0, samples[samples.length - 1].t),
+      startUnix: start,
+      taps: tapRows.map(tp => ({ t: (+tp.unix_ms - start) / 1000, unix_ms: +tp.unix_ms, label: tp.label || '' })),
+    };
+    startReplay(data, `${sesName} · ${clockTime(start).slice(0, 8)}`);
+  } catch (e) {
+    setStatus(`Could not load the recording: ${e.message}`, true);
+  }
+}
 
 /* ---------- drawing ---------- */
 let drawPending = false;
@@ -640,6 +815,13 @@ function draw() {
         out += `<polyline points="${t.trail.map(p => `${sx(p.x)},${sy(p.y)}`).join(' ')}" fill="none" stroke="${t.color}" stroke-opacity="0.4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
       }
     }
+  }
+
+  // phone taps (replay): where the tag was at each tap
+  for (const m of tapMarksToDraw()) {
+    const x = sx(m.x), y = sy(m.y);
+    out += `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" transform="rotate(45 ${x} ${y})" fill="var(--tap)" stroke="var(--panel)" stroke-width="1.5"/>`;
+    if (m.label) out += `<text x="${x + 10}" y="${y + 16}" font-size="11" font-weight="600" fill="var(--tap)">${esc(m.label)}</text>`;
   }
 
   // anchors
@@ -757,6 +939,13 @@ function draw3d(W, H) {
     out += `<text x="${x + 12}" y="${y - 4}" font-size="12" font-weight="600" fill="var(--text)">A${i + 1} · ${esc(id)}</text>`;
     out += `<text x="${x + 12}" y="${y + 10}" font-size="11" fill="var(--muted)">z ${(a.z / 1000).toFixed(2)} m</text>`;
   });
+
+  // phone taps (replay): where the tag was at each tap
+  for (const m of tapMarksToDraw()) {
+    const [x, y] = P(m.x, m.y, m.z);
+    out += `<rect x="${(x - 6).toFixed(1)}" y="${(y - 6).toFixed(1)}" width="12" height="12" transform="rotate(45 ${x.toFixed(1)} ${y.toFixed(1)})" fill="var(--tap)" stroke="var(--panel)" stroke-width="1.5"/>`;
+    if (m.label) out += `<text x="${(x + 10).toFixed(1)}" y="${(y + 16).toFixed(1)}" font-size="11" font-weight="600" fill="var(--tap)">${esc(m.label)}</text>`;
+  }
 
   // tags
   const now = Date.now();
@@ -971,6 +1160,12 @@ $('btnSaveJson').onclick = saveJson;
 $('btnSaveCsv').onclick = saveCsv;
 $('btnUpload').onclick = uploadRecording;
 $('btnNewSession').onclick = newSession;
+$('btnOpenDb').onclick = openDbDialog;
+$('btnDbClose').onclick = () => $('dbDialog').close();
+$('dbSession').onchange = loadRecList;
+$('dbRecList').onclick = (e) => { const b = e.target.closest('button[data-i]'); if (b) replayFromDb(dbRecs[+b.dataset.i]); };
+$('tapMarks').onclick = (e) => { const b = e.target.closest('button[data-i]'); if (b) jumpToTap(+b.dataset.i); };
+$('tapsTable').onclick = (e) => { const r = e.target.closest('tr[data-i]'); if (r) jumpToTap(+r.dataset.i); };
 $('sessionSel').onchange = () => pickSession($('sessionSel').value);
 $('btnOpen').onclick = () => $('fileOpen').click();
 $('fileOpen').onchange = async (e) => {
