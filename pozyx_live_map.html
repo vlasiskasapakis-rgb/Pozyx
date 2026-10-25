@@ -66,6 +66,7 @@
   <button id="btnRec">● Record</button>
   <button id="btnSaveJson" disabled>Save JSON</button>
   <button id="btnSaveCsv" disabled>Save CSV</button>
+  <button id="btnUpload" disabled hidden title="Saves the last recording to the database">Upload</button>
   <button id="btnOpen">Open recording</button>
   <input type="file" id="fileOpen" accept=".json,.csv" hidden>
   <label><input type="checkbox" id="chkSmooth" checked> Smoothing</label>
@@ -107,6 +108,7 @@
   </div>
 </main>
 
+<script src="pozyx_db.js"></script>
 <script>
 const COLORS = ['#d85a30', '#534ab7', '#d4537e', '#185fa5', '#ba7517', '#3b6d11'];
 const TRAIL_LEN = 60;
@@ -273,6 +275,7 @@ function startRec() {
   rec.samples = [];
   rec.anchors = new Map(anchors);
   rec.data = null;
+  rec.uploaded = false;
   updateRecUI();
 }
 function stopRec() {
@@ -280,10 +283,11 @@ function stopRec() {
   rec.on = false;
   rec.data = buildRecording();
   updateRecUI();
-  const note = rec.unsynced
+  rec.note = rec.unsynced
     ? ` Note: ${rec.unsynced} positions had no Arduino clock data, so they use the time they arrived (less exact). Upload the latest sketch.`
     : '';
-  setStatus(`Recorded ${rec.data.samples.length} positions over ${rec.data.duration.toFixed(1)} s. Click "Save JSON" or "Save CSV" to keep it.${note}`, !!rec.unsynced);
+  setStatus(`Recorded ${rec.data.samples.length} positions over ${rec.data.duration.toFixed(1)} s. Click "Save JSON" or "Save CSV" to keep it.${rec.note}`, !!rec.unsynced);
+  if (hasDb() && rec.data.samples.length) uploadRecording();
 }
 function recAnchor(id, a) { if (rec.on) rec.anchors.set(id, a); }
 function recPos(id, x, y, z, ms, at) {
@@ -328,8 +332,45 @@ function updateRecUI() {
     : '● Record';
   $('btnSaveJson').disabled = !rec.data;
   $('btnSaveCsv').disabled = !rec.data;
+  const u = $('btnUpload');
+  u.hidden = !hasDb();
+  u.disabled = !rec.data || !rec.data.samples.length || rec.uploaded || cloudBusy;
+  u.textContent = cloudBusy ? 'Uploading…' : rec.uploaded ? 'Uploaded ✓' : 'Upload';
 }
 setInterval(() => { if (rec.on) updateRecUI(); }, 200);
+
+/* ---------- database (Supabase, see pozyx_db.js) ---------- */
+let cloudBusy = false;
+const hasDb = () => !!(window.pozyxDb && pozyxDb.configured());
+
+async function uploadRecording() {
+  const d = rec.data;
+  if (!d || cloudBusy || !hasDb()) return;
+  cloudBusy = true;
+  updateRecUI();
+  const id = fileStamp(rec.startedAt);
+  // one row per tag and millisecond (the database key)
+  const rows = new Map();
+  for (const s of d.samples) rows.set(`${s.id}|${s.unix_ms}`, { recording_id: id, tag: s.id, unix_ms: s.unix_ms, t: s.t, x: s.x, y: s.y, z: s.z });
+  const all = [...rows.values()];
+  try {
+    setStatus(`Uploading ${all.length} positions to the database…`);
+    await pozyxDb.upsert('recordings', [{ id, started_at_unix_ms: d.startedAtUnixMs, duration_s: d.duration }], 'id');
+    if (d.anchors.length) {
+      await pozyxDb.upsert('anchors', d.anchors.map(a => ({ recording_id: id, anchor_id: a.id, x: a.x, y: a.y, z: a.z })), 'recording_id,anchor_id');
+    }
+    for (let i = 0; i < all.length; i += 1000) {
+      await pozyxDb.upsert('positions', all.slice(i, i + 1000), 'recording_id,tag,unix_ms');
+      setStatus(`Uploading to the database… ${Math.min(i + 1000, all.length)} / ${all.length} positions`);
+    }
+    rec.uploaded = true;
+    setStatus(`Saved recording "${id}" to the database (${all.length} positions).${rec.note || ''}`, !!rec.unsynced);
+  } catch (e) {
+    setStatus(`Could not upload to the database: ${e.message}. Check the internet connection, then click "Upload" to try again. The recording is still here, and Save CSV works too.`, true);
+  }
+  cloudBusy = false;
+  updateRecUI();
+}
 
 function fileStamp(d) {
   const p = (n) => String(n).padStart(2, '0');
@@ -875,6 +916,7 @@ $('btnView').onclick = () => setView(viewMode === '3d' ? 'top' : '3d');
 $('btnRec').onclick = () => (rec.on ? stopRec() : startRec());
 $('btnSaveJson').onclick = saveJson;
 $('btnSaveCsv').onclick = saveCsv;
+$('btnUpload').onclick = uploadRecording;
 $('btnOpen').onclick = () => $('fileOpen').click();
 $('fileOpen').onchange = async (e) => {
   const f = e.target.files[0];
