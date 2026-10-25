@@ -9,6 +9,9 @@ other apps.
 | `pozyx_auto_positioning/pozyx_auto_positioning.ino` | Arduino sketch: measures the anchors, works out their positions, then streams tag positions over USB. |
 | `pozyx_live_map.html` | Web page for the laptop: live 3D/top view, recording, replay, and export to CSV/JSON with real timestamps. |
 | `sync_marker.html` | Phone page: tap a big button to log the exact time of an event. |
+| `ar_editor.html` | Laptop page: upload poster images and place text, images and 3D models on them. |
+| `ar_viewer.html` | Phone page: shows those overlays on the posters through the camera (AR) and records which poster you look at, and for how long. |
+| `ar_scene.js` | Shared code that builds the AR overlays (used by the editor preview and the viewer). |
 
 ## 1. Arduino sketch
 
@@ -101,6 +104,30 @@ clock against the Supabase server (function `server_time_ms` in the schema)
 and save every time corrected to it, so taps and positions line up. Each page
 shows the measured difference. For recordings made before this, use
 **Tap shift** in the replay to move the taps by hand.
+
+## 5. AR posters
+
+Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
+`ar_published`, `looks`, and the storage bucket `ar`).
+
+**Editor (laptop)**: `ar_editor.html`
+1. **Upload images**: the posters as printed. Recognition works best with
+   detailed, high-contrast pictures (photos, illustrations), not plain shapes
+   or mostly text.
+2. Pick an image, then **Add text**, **Add image** or **Add 3D model**
+   (`.glb`, or a `.gltf` with everything embedded). Drag items into place and
+   use the panel on the right for size, height above the poster and rotation.
+   The 3D preview shows how it will look on the phone. Changes save by themselves.
+3. **Publish to phone** after adding, removing or replacing posters (not
+   needed after only moving or editing items).
+
+**Viewer (phone)**: `ar_viewer.html`
+1. Pick the session at the top (**Refresh** loads new ones), then **Start camera**.
+2. Point the circle in the middle of the screen at a poster. While it stays
+   on a poster, that counts as a look; glances under 0.3 s are ignored.
+3. Each look is saved with start, end and length, on the server clock, under
+   the chosen session. Replays in the live map show looks as bars under the
+   timeline and in a "Looks" list.
 
 ## Syncing tips
 

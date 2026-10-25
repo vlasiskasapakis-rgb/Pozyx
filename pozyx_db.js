@@ -57,6 +57,37 @@ window.pozyxDb = {
     });
   },
 
+  /* ---------- file storage (bucket "ar") ---------- */
+
+  // Public address of a stored file
+  fileUrl(path) {
+    return window.POZYX_DB.url.replace(/\/+$/, '') + '/storage/v1/object/public/ar/' + path.split('/').map(encodeURIComponent).join('/');
+  },
+
+  // Upload (or replace) a file; resolves with its path
+  async uploadFile(path, blob, contentType) {
+    const c = window.POZYX_DB;
+    const headers = { apikey: c.key, 'Content-Type': contentType || blob.type || 'application/octet-stream', 'x-upsert': 'true' };
+    if (c.key.startsWith('eyJ')) headers.Authorization = 'Bearer ' + c.key;
+    const res = await fetch(c.url.replace(/\/+$/, '') + '/storage/v1/object/ar/' + path.split('/').map(encodeURIComponent).join('/'), {
+      method: 'POST', headers, body: blob,
+    });
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try { const j = await res.json(); if (j.message || j.error) msg = j.message || j.error; } catch (e) {}
+      throw new Error(`upload failed: ${msg}`);
+    }
+    return path;
+  },
+
+  async removeFiles(paths) {
+    const c = window.POZYX_DB;
+    if (!paths.length) return;
+    const headers = { apikey: c.key, 'Content-Type': 'application/json' };
+    if (c.key.startsWith('eyJ')) headers.Authorization = 'Bearer ' + c.key;
+    await fetch(c.url.replace(/\/+$/, '') + '/storage/v1/object/ar', { method: 'DELETE', headers, body: JSON.stringify({ prefixes: paths }) });
+  },
+
   remove(table, column, value) {
     return this.request(`${table}?${column}=eq.${encodeURIComponent(value)}`, { method: 'DELETE', prefer: 'return=minimal' });
   },

@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pozyx AR Editor</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --text: #1f1e1b; --muted: #6b6a64;
+    --border: #dedcd4; --grid: #ebe9e2; --accent: #0f6e56; --accent-text: #ffffff;
+    --danger: #a32d2d; --warn: #b7791f; --select: #185fa5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1b19; --panel: #242422; --text: #ecebe6; --muted: #a3a29b;
+      --border: #3a3936; --grid: #2c2c2a; --accent: #5dcaa5; --accent-text: #04342c;
+      --danger: #f09595; --warn: #e9b45a; --select: #85b7eb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 auto 0 0; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; color: var(--muted); }
+  button, .btn { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; text-decoration: none; display: inline-block; }
+  button:hover, .btn:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.danger { color: var(--danger); border-color: var(--danger); }
+  button:disabled { opacity: .45; cursor: default; }
+  .status { width: 100%; font-size: 13px; color: var(--muted); }
+  .status.err { color: var(--danger); }
+  .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .chip.warn { color: var(--warn); border-color: var(--warn); }
+  .chip.ok { color: var(--accent); border-color: var(--accent); }
+  main { display: grid; grid-template-columns: 220px minmax(0, 1fr) 340px; gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 0; }
+  .side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .hint, .empty { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+
+  /* image list */
+  .tlist { display: flex; flex-direction: column; gap: 8px; }
+  .titem { display: grid; grid-template-columns: 56px 1fr; gap: 8px; align-items: center; padding: 6px; border: 1px solid transparent; border-radius: 8px; cursor: pointer; text-align: left; background: none; }
+  .titem:hover { border-color: var(--border); }
+  .titem.sel { border-color: var(--select); background: color-mix(in srgb, var(--select) 8%, transparent); }
+  .titem img { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; background: var(--grid); }
+  .titem .tname { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .titem .tmeta { font-size: 12px; color: var(--muted); }
+
+  /* stage */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .toolbar input[type=text] { font: inherit; font-size: 15px; font-weight: 600; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); flex: 1; min-width: 160px; }
+  .stagewrap { background: var(--grid); border-radius: 8px; padding: 12px; display: flex; justify-content: center; overflow: hidden; }
+  #stage { position: relative; display: inline-block; max-width: 100%; touch-action: none; user-select: none; }
+  #stageImg { display: block; max-width: 100%; max-height: 68vh; border-radius: 2px; }
+  #ovLayer { position: absolute; inset: 0; }
+  .ov { position: absolute; cursor: grab; transform-origin: 50% 50%; }
+  .ov:active { cursor: grabbing; }
+  .ov img, .ov canvas { display: block; width: 100%; height: auto; pointer-events: none; }
+  .ov.model { aspect-ratio: 1; border: 2px dashed #fff; background: rgba(24, 95, 165, .35); color: #fff; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; font-weight: 600; padding: 4px; overflow: hidden; text-shadow: 0 1px 2px #000; transform-origin: 50% 100%; }
+  .ov.sel { outline: 2px solid var(--select); outline-offset: 3px; }
+  .ov .pin { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: var(--select); border: 2px solid #fff; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+  .ov.model .pin { top: 100%; }
+
+  /* properties */
+  .props { display: flex; flex-direction: column; gap: 10px; font-size: 14px; }
+  .props label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 13px; }
+  .props .row { display: flex; gap: 8px; align-items: center; }
+  .props input[type=range] { width: 100%; accent-color: var(--accent); }
+  .props textarea { font: inherit; font-size: 14px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); min-height: 64px; resize: vertical; }
+  .props .val { font-variant-numeric: tabular-nums; color: var(--text); }
+  .props input[type=color] { width: 44px; height: 32px; border: 1px solid var(--border); border-radius: 6px; background: none; padding: 2px; }
+  #preview { width: 100%; height: 300px; border-radius: 8px; overflow: hidden; background: var(--grid); }
+  #preview canvas { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AR editor</h1>
+  <button id="btnUpload" class="primary">Upload images</button>
+  <button id="btnPublish">Publish to phone</button>
+  <span id="pubState" class="chip">–</span>
+  <a class="btn" href="ar_viewer.html" target="_blank">Open AR viewer</a>
+  <div id="status" class="status">Loading…</div>
+</header>
+
+<main>
+  <aside class="card">
+    <h2>Images</h2>
+    <div id="targetList" class="tlist"></div>
+  </aside>
+
+  <section class="card">
+    <div class="toolbar">
+      <input type="text" id="targetName" aria-label="Image name" placeholder="Image name">
+      <button id="btnAddText">Add text</button>
+      <button id="btnAddImage">Add image</button>
+      <button id="btnAddModel">Add 3D model</button>
+      <button id="btnDelTarget" class="danger">Delete image</button>
+    </div>
+    <div class="stagewrap"><div id="stage"><img id="stageImg" alt=""><div id="ovLayer"></div></div></div>
+    <p class="hint">Drag items to move them. The dot marks the point they are placed on (3D models stand on it). Click an item to change it on the right.</p>
+  </section>
+
+  <aside class="side">
+    <div class="card">
+      <h2>Selected item</h2>
+      <div id="props" class="props"><div class="empty">Click an item on the image, or add one.</div></div>
+    </div>
+    <div class="card">
+      <h2>3D preview</h2>
+      <div id="preview"></div>
+      <p class="hint">How it looks on the phone. Drag to turn, scroll to zoom.</p>
+    </div>
+  </aside>
+</main>
+
+<input type="file" id="fileTargets" accept="image/*" multiple hidden>
+<input type="file" id="fileImage" accept="image/*" hidden>
+<input type="file" id="fileModel" accept=".glb,.gltf" hidden>
+
+<script src="pozyx_db.js"></script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { addLights, imagePlane, buildTargetGroup, mixersIn, textCanvas } from './ar_scene.js';
+
+const $ = (id) => document.getElementById(id);
+const db = window.pozyxDb;
+const fileUrl = (p) => db.fileUrl(p);
+const MINDAR = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js';
+
+let targets = [];                 // ar_targets rows
+const overlaysBy = new Map();     // target id -> ar_overlays rows
+let published = null;             // ar_published row
+let selTarget = null, selOverlay = null;
+let pickMode = 'add';             // the file picker adds a new item or replaces the selected item's file
+
+function setStatus(text, isErr) { $('status').textContent = text; $('status').classList.toggle('err', !!isErr); }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const safeName = (n) => n.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80);
+function loadImg(src, cors) {
+  return new Promise((ok, bad) => {
+    const img = new Image();
+    if (cors) img.crossOrigin = 'anonymous';
+    img.onload = () => ok(img);
+    img.onerror = () => bad(new Error('could not load image ' + src));
+    img.src = src;
+  });
+}
+
+/* ---------- loading ---------- */
+async function loadAll() {
+  if (!db || !db.configured()) { setStatus('No database set in pozyx_db.js.', true); return; }
+  try {
+    targets = await db.request('ar_targets?select=*&order=created_at_unix_ms.asc');
+    const ovs = await db.request('ar_overlays?select=*');
+    overlaysBy.clear();
+    for (const t of targets) overlaysBy.set(t.id, []);
+    for (const o of ovs) if (overlaysBy.has(o.target_id)) overlaysBy.get(o.target_id).push(o);
+    published = (await db.request('ar_published?select=*&id=eq.current'))[0] || null;
+  } catch (e) {
+    setStatus(/ar_targets|ar_overlays|ar_published/.test(e.message)
+      ? 'The AR tables are missing: run the updated supabase/schema.sql in Supabase, then reload.'
+      : `Could not load: ${e.message}`, true);
+    return;
+  }
+  setStatus(targets.length ? `${targets.length} image${targets.length === 1 ? '' : 's'}.` : 'Upload the images (posters) the phone should recognise.');
+  selectTarget(targets[0] ? targets[0].id : null);
+  renderPublishState();
+}
+
+/* ---------- images (targets) ---------- */
+function renderTargetList() {
+  $('targetList').innerHTML = targets.length ? targets.map(t => {
+    const n = (overlaysBy.get(t.id) || []).length;
+    return `<button class="titem${selTarget && selTarget.id === t.id ? ' sel' : ''}" data-id="${esc(t.id)}">
+      <img src="${esc(fileUrl(t.image_path))}" alt="">
+      <span><span class="tname">${esc(t.name)}</span><br><span class="tmeta">${n} item${n === 1 ? '' : 's'}</span></span></button>`;
+  }).join('') : '<div class="empty">No images yet.</div>';
+}
+
+function selectTarget(id) {
+  selTarget = targets.find(t => t.id === id) || null;
+  selOverlay = null;
+  renderTargetList();
+  const has = !!selTarget;
+  for (const b of ['btnAddText', 'btnAddImage', 'btnAddModel', 'btnDelTarget', 'targetName']) $(b).disabled = !has;
+  $('targetName').value = has ? selTarget.name : '';
+  $('stageImg').src = has ? fileUrl(selTarget.image_path) : '';
+  $('stageImg').hidden = !has;
+  renderStage();
+  renderProps();
+  schedulePreview();
+}
+
+async function addImages(files) {
+  let last = null;
+  for (const f of files) {
+    try {
+      setStatus(`Uploading ${f.name}…`);
+      const url = URL.createObjectURL(f);
+      const img = await loadImg(url);
+      URL.revokeObjectURL(url);
+      // at most 1280 px on the long side: plenty for recognition, quick to load on the phone
+      const scale = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+      const id = 't_' + newId();
+      const path = `targets/${id}.jpg`;
+      await db.uploadFile(path, blob, 'image/jpeg');
+      const row = { id, name: f.name.replace(/\.[^.]+$/, ''), image_path: path, width_px: w, height_px: h, created_at_unix_ms: Date.now() };
+      await db.upsert('ar_targets', [row], 'id');
+      targets.push(row);
+      overlaysBy.set(id, []);
+      last = id;
+    } catch (e) {
+      setStatus(`Could not upload ${f.name}: ${e.message}`, true);
+      return;
+    }
+  }
+  if (last) selectTarget(last);
+  renderPublishState();
+  setStatus(`Uploaded ${files.length} image${files.length === 1 ? '' : 's'}. Click "Publish to phone" when your images are ready.`);
+}
+
+let renameTimer = null;
+function renameTarget() {
+  if (!selTarget) return;
+  selTarget.name = $('targetName').value.trim() || selTarget.name;
+  renderTargetList();
+  clearTimeout(renameTimer);
+  const t = selTarget;
+  renameTimer = setTimeout(() => db.upsert('ar_targets', [t], 'id').catch(e => setStatus(`Could not save the name: ${e.message}`, true)), 500);
+}
+
+async function deleteTarget() {
+  const t = selTarget;
+  if (!t) return;
+  const ovs = overlaysBy.get(t.id) || [];
+  if (!confirm(`Delete the image "${t.name}" and its ${ovs.length} item${ovs.length === 1 ? '' : 's'}?\n\nThis cannot be undone.`)) return;
+  try {
+    await db.remove('ar_targets', 'id', t.id);   // its overlays go with it
+    await db.removeFiles([t.image_path, ...ovs.map(o => o.asset_path).filter(Boolean)]);
+    targets = targets.filter(x => x !== t);
+    overlaysBy.delete(t.id);
+    selectTarget(targets[0] ? targets[0].id : null);
+    renderPublishState();
+    setStatus(`Deleted "${t.name}".`);
+  } catch (e) {
+    setStatus(`Could not delete: ${e.message}`, true);
+  }
+}
+
+/* ---------- publishing the recognition file ---------- */
+function isPublished() {
+  return published && published.target_ids.length === targets.length && published.target_ids.every((id, i) => id === targets[i].id);
+}
+function renderPublishState() {
+  const el = $('pubState');
+  if (!targets.length) { el.textContent = 'No images'; el.className = 'chip'; }
+  else if (isPublished()) { el.textContent = 'Phone is up to date'; el.className = 'chip ok'; }
+  else { el.textContent = 'Images changed: publish to phone'; el.className = 'chip warn'; }
+  $('btnPublish').disabled = !targets.length;
+  $('btnPublish').classList.toggle('primary', targets.length && !isPublished());
+}
+
+async function publish() {
+  if (!targets.length) return;
+  $('btnPublish').disabled = true;
+  try {
+    setStatus('Loading the recognition tool…');
+    const { Compiler } = await import(MINDAR);
+    setStatus('Loading images…');
+    const imgs = await Promise.all(targets.map(t => loadImg(fileUrl(t.image_path), true)));
+    const compiler = new Compiler();
+    await compiler.compileImageTargets(imgs, (p) => setStatus(`Preparing ${imgs.length} image${imgs.length === 1 ? '' : 's'} for recognition… ${Math.round(p)}%`));
+    const data = await compiler.exportData();
+    setStatus('Uploading…');
+    const path = `published/targets_${Date.now()}.mind`;
+    await db.uploadFile(path, new Blob([data]), 'application/octet-stream');
+    const row = { id: 'current', mind_path: path, target_ids: targets.map(t => t.id), published_at_unix_ms: Date.now() };
+    await db.upsert('ar_published', [row], 'id');
+    if (published && published.mind_path) db.removeFiles([published.mind_path]).catch(() => {});
+    published = row;
+    setStatus(`Published: the phone now recognises ${targets.length} image${targets.length === 1 ? '' : 's'}. Reopen the AR viewer to load it.`);
+  } catch (e) {
+    setStatus(`Could not publish: ${e.message}`, true);
+  }
+  renderPublishState();
+}
+
+/* ---------- items on the image (overlays) ---------- */
+function renderStage() {
+  const layer = $('ovLayer');
+  if (!selTarget) { layer.innerHTML = '<div class="empty" style="position:static;padding:40px">Upload an image to start.</div>'; return; }
+  layer.innerHTML = '';
+  for (const ov of overlaysBy.get(selTarget.id) || []) layer.appendChild(ovElement(ov));
+}
+
+function ovElement(ov) {
+  const el = document.createElement('div');
+  el.className = 'ov ' + ov.kind + (selOverlay === ov ? ' sel' : '');
+  el.dataset.id = ov.id;
+  el.style.left = (ov.x * 100) + '%';
+  el.style.top = (ov.y * 100) + '%';
+  el.style.width = (ov.size * 100) + '%';
+  // models stand on their point; text and images are centred on it
+  el.style.transform = (ov.kind === 'model' ? 'translate(-50%, -100%)' : 'translate(-50%, -50%)') + ` rotate(${-(+ov.rot_z || 0)}deg)`;
+  if (ov.kind === 'text') el.appendChild(textCanvas(ov));
+  else if (ov.kind === 'image') { const i = document.createElement('img'); i.src = fileUrl(ov.asset_path); i.alt = ''; el.appendChild(i); }
+  else el.innerHTML = `<span>3D · ${esc(ov.asset_name || 'model')}</span>`;
+  const pin = document.createElement('span');
+  pin.className = 'pin';
+  el.appendChild(pin);
+  return el;
+}
+
+function refreshOv(ov) {
+  const old = $('ovLayer').querySelector(`[data-id="${CSS.escape(ov.id)}"]`);
+  if (old) old.replaceWith(ovElement(ov));
+}
+
+function selectOverlay(ov) {
+  selOverlay = ov;
+  renderStage();
+  renderProps();
+}
+
+const saveTimers = new Map();
+function saveOverlay(ov, now) {
+  clearTimeout(saveTimers.get(ov.id));
+  const run = () => {
+    ov.updated_at_unix_ms = Date.now();
+    db.upsert('ar_overlays', [ov], 'id').then(() => setStatus('Saved.'), e => setStatus(`Could not save: ${e.message}`, true));
+  };
+  if (now) run(); else saveTimers.set(ov.id, setTimeout(run, 400));
+}
+
+async function addOverlay(kind, file) {
+  if (!selTarget) return;
+  const ov = {
+    // new items start near the middle, a little apart so they do not cover each other
+    id: 'o_' + newId(), target_id: selTarget.id, kind,
+    x: 0.5 + 0.1 * (((overlaysBy.get(selTarget.id) || []).length % 5) - 2), y: 0.5, z: kind === 'model' ? 0 : 0.02,
+    size: kind === 'text' ? 0.4 : 0.3, rot_x: 0, rot_y: 0, rot_z: 0,
+    text: kind === 'text' ? 'Your text' : null, color: '#ffffff', background: '#000000cc', asset_path: null, asset_name: null,
+  };
+  try {
+    if (file) {
+      setStatus(`Uploading ${file.name}…`);
+      ov.asset_path = `assets/${ov.id}/${safeName(file.name)}`;
+      ov.asset_name = file.name;
+      await db.uploadFile(ov.asset_path, file, kind === 'model' ? 'model/gltf-binary' : file.type);
+    }
+    ov.updated_at_unix_ms = Date.now();
+    await db.upsert('ar_overlays', [ov], 'id');
+  } catch (e) {
+    setStatus(`Could not add: ${e.message}`, true);
+    return;
+  }
+  overlaysBy.get(selTarget.id).push(ov);
+  renderTargetList();
+  selectOverlay(ov);
+  schedulePreview();
+  setStatus('Added. Drag it into place.');
+}
+
+async function replaceAsset(file) {
+  const ov = selOverlay;
+  if (!ov || !file) return;
+  const oldPath = ov.asset_path;
+  try {
+    setStatus(`Uploading ${file.name}…`);
+    ov.asset_path = `assets/${ov.id}/${Date.now().toString(36)}_${safeName(file.name)}`;
+    ov.asset_name = file.name;
+    await db.uploadFile(ov.asset_path, file, ov.kind === 'model' ? 'model/gltf-binary' : file.type);
+    saveOverlay(ov, true);
+    if (oldPath) db.removeFiles([oldPath]).catch(() => {});
+  } catch (e) {
+    ov.asset_path = oldPath;
+    setStatus(`Could not replace the file: ${e.message}`, true);
+    return;
+  }
+  refreshOv(ov);
+  renderProps();
+  schedulePreview();
+}
+
+async function deleteOverlay() {
+  const ov = selOverlay;
+  if (!ov || !confirm('Delete this item?')) return;
+  try {
+    await db.remove('ar_overlays', 'id', ov.id);
+    if (ov.asset_path) db.removeFiles([ov.asset_path]).catch(() => {});
+  } catch (e) {
+    setStatus(`Could not delete: ${e.message}`, true);
+    return;
+  }
+  const list = overlaysBy.get(ov.target_id);
+  list.splice(list.indexOf(ov), 1);
+  selOverlay = null;
+  renderTargetList();
+  renderStage();
+  renderProps();
+  schedulePreview();
+}
+
+/* ---------- properties panel ---------- */
+function slider(field, label, min, max, step, fmt) {
+  const v = +selOverlay[field] || 0;
+  return `<label>${label} <span class="row"><input type="range" data-f="${field}" min="${min}" max="${max}" step="${step}" value="${v}">
+    <span class="val" data-v="${field}">${fmt(v)}</span></span></label>`;
+}
+const pct = (v) => Math.round(v * 100) + '%';
+const degs = (v) => Math.round(v) + '°';
+
+function renderProps() {
+  const ov = selOverlay, el = $('props');
+  if (!ov) { el.innerHTML = '<div class="empty">Click an item on the image, or add one.</div>'; return; }
+  let h = '';
+  if (ov.kind === 'text') {
+    const hasBg = ov.background && ov.background !== 'transparent';
+    h += `<label>Text<textarea data-f="text">${esc(ov.text || '')}</textarea></label>
+      <div class="row"><label>Colour<input type="color" data-f="color" value="${esc((ov.color || '#ffffff').slice(0, 7))}"></label>
+      <label>Background<span class="row"><input type="checkbox" data-f="hasBg"${hasBg ? ' checked' : ''}>
+      <input type="color" data-f="bgColor" value="${esc(hasBg ? ov.background.slice(0, 7) : '#000000')}"></span></label></div>`;
+  } else {
+    h += `<div>${ov.kind === 'model' ? '3D model' : 'Image'}: <b>${esc(ov.asset_name || '')}</b></div>
+      <button data-act="replace">Replace file…</button>`;
+  }
+  h += slider('size', 'Size (of image width)', 0.02, 1.5, 0.01, pct);
+  h += slider('z', 'Height above the image', 0, 1, 0.01, pct);
+  h += slider('rot_z', 'Spin', -180, 180, 1, degs);
+  if (ov.kind === 'model') {
+    h += slider('rot_x', 'Tilt (forward / back)', -180, 180, 1, degs);
+    h += slider('rot_y', 'Turn (left / right)', -180, 180, 1, degs);
+  }
+  h += `<button class="danger" data-act="delete">Delete item</button>`;
+  el.innerHTML = h;
+}
+
+$('props').addEventListener('input', (e) => {
+  const ov = selOverlay, f = e.target.dataset.f;
+  if (!ov || !f) return;
+  if (f === 'hasBg' || f === 'bgColor') {
+    ov.background = $('props').querySelector('[data-f="hasBg"]').checked
+      ? $('props').querySelector('[data-f="bgColor"]').value + 'cc' : 'transparent';
+  } else if (e.target.type === 'range') {
+    ov[f] = +e.target.value;
+    const out = $('props').querySelector(`[data-v="${f}"]`);
+    out.textContent = (f === 'size' || f === 'z') ? pct(ov[f]) : degs(ov[f]);
+  } else {
+    ov[f] = e.target.value;
+  }
+  refreshOv(ov);
+  saveOverlay(ov);
+  schedulePreview();
+});
+$('props').addEventListener('click', (e) => {
+  const act = e.target.dataset.act;
+  if (act === 'delete') deleteOverlay();
+  if (act === 'replace') { pickMode = 'replace'; (selOverlay.kind === 'model' ? $('fileModel') : $('fileImage')).click(); }
+});
+
+/* ---------- dragging ---------- */
+let drag = null;
+$('ovLayer').addEventListener('pointerdown', (e) => {
+  const el = e.target.closest('.ov');
+  if (!el) { if (selOverlay) selectOverlay(null); return; }
+  const ov = (overlaysBy.get(selTarget.id) || []).find(o => o.id === el.dataset.id);
+  if (!ov) return;
+  if (selOverlay !== ov) selectOverlay(ov);
+  const r = $('ovLayer').getBoundingClientRect();
+  drag = { ov, r, dx: (e.clientX - r.left) / r.width - ov.x, dy: (e.clientY - r.top) / r.height - ov.y, moved: false };
+  $('ovLayer').setPointerCapture(e.pointerId);
+});
+$('ovLayer').addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const { ov, r } = drag;
+  ov.x = Math.min(1.5, Math.max(-0.5, (e.clientX - r.left) / r.width - drag.dx));
+  ov.y = Math.min(1.5, Math.max(-0.5, (e.clientY - r.top) / r.height - drag.dy));
+  drag.moved = true;
+  const el = $('ovLayer').querySelector(`[data-id="${CSS.escape(ov.id)}"]`);
+  el.style.left = (ov.x * 100) + '%';
+  el.style.top = (ov.y * 100) + '%';
+});
+const endDrag = () => {
+  if (drag && drag.moved) { saveOverlay(drag.ov, true); schedulePreview(); }
+  drag = null;
+};
+$('ovLayer').addEventListener('pointerup', endDrag);
+$('ovLayer').addEventListener('pointercancel', endDrag);
+
+/* ---------- 3D preview ---------- */
+const view = $('preview');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+addLights(scene);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 50);
+camera.position.set(0.25, -0.35, 1.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0.1);
+let content = null, mixers = [], previewTimer = null, previewRun = 0;
+const clock = new THREE.Clock();
+
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(buildPreview, 250);
+}
+async function buildPreview() {
+  const run = ++previewRun, t = selTarget;
+  const group = new THREE.Group();
+  if (t) {
+    group.add(await imagePlane(t, fileUrl(t.image_path)).catch(() => new THREE.Group()));
+    group.add(await buildTargetGroup(t, overlaysBy.get(t.id) || [], fileUrl));
+  }
+  if (run !== previewRun) return;   // a newer change is being built
+  if (content) scene.remove(content);
+  content = group;
+  scene.add(group);
+  mixers = mixersIn(group);
+}
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(view);
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  for (const m of mixers) m.update(dt);
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+/* ---------- wiring ---------- */
+$('btnUpload').onclick = () => $('fileTargets').click();
+$('fileTargets').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; if (f.length) addImages(f); };
+$('targetList').onclick = (e) => { const b = e.target.closest('.titem'); if (b) selectTarget(b.dataset.id); };
+$('targetName').addEventListener('input', renameTarget);
+$('btnDelTarget').onclick = deleteTarget;
+$('btnPublish').onclick = publish;
+$('btnAddText').onclick = () => addOverlay('text');
+$('btnAddImage').onclick = () => { pickMode = 'add'; $('fileImage').click(); };
+$('btnAddModel').onclick = () => { pickMode = 'add'; $('fileModel').click(); };
+$('fileImage').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) (pickMode === 'replace' ? replaceAsset(f) : addOverlay('image', f)); };
+$('fileModel').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) (pickMode === 'replace' ? replaceAsset(f) : addOverlay('model', f)); };
+window.addEventListener('resize', () => renderStage());
+
+loadAll();
+</script>
+</body>
+</html>

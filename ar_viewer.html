@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pozyx AR Viewer</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+} }
+</script>
+<style>
+  :root {
+    --accent: #5dcaa5; --accent-dark: #0f6e56; --look: #f0a868; --danger: #f09595;
+    --glass: rgba(20, 20, 18, .62); --text: #f4f3ef; --muted: #c9c8c1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #000; color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  #ar { position: fixed; inset: 0; overflow: hidden; }
+  .ui { position: fixed; inset: 0; z-index: 11; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between;
+        padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+  .ui > * { pointer-events: auto; }
+  .top { display: flex; flex-direction: column; gap: 6px; }
+  .bar { display: flex; gap: 8px; }
+  select, button { font: inherit; font-size: 15px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .25); background: var(--glass); color: var(--text); padding: 9px 12px; backdrop-filter: blur(6px); }
+  select { flex: 1; min-width: 0; }
+  .status { font-size: 12px; color: var(--muted); background: var(--glass); border-radius: 8px; padding: 5px 9px; align-self: flex-start; max-width: 100%; }
+  .status.ok::before, .status.wait::before { content: "● "; }
+  .status.ok::before { color: var(--accent); }
+  .status.wait::before { color: var(--look); }
+  .status.bad { color: var(--danger); }
+  .cross { position: fixed; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px; pointer-events: none; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .85); box-shadow: 0 0 0 1px rgba(0, 0, 0, .4); transition: border-color .15s, transform .15s; }
+  .cross::after { content: ""; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: #fff; }
+  .cross.on { border-color: var(--look); transform: scale(1.15); }
+  .cross.on::after { background: var(--look); }
+  .bottom { display: flex; flex-direction: column; gap: 8px; }
+  .looknow { background: var(--glass); border-radius: 12px; padding: 10px 14px; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .looknow.on { background: var(--look); color: #2a1606; }
+  ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  ol li { background: var(--glass); border-radius: 8px; padding: 5px 10px; font-size: 13px; display: flex; justify-content: space-between; gap: 10px; font-variant-numeric: tabular-nums; }
+  ol li .d { color: var(--muted); }
+  .start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; background: #151513; z-index: 10; }
+  .start h1 { margin: 0; font-size: 22px; }
+  .start p { margin: 0; color: var(--muted); max-width: 34ch; line-height: 1.45; }
+  .start button { background: var(--accent-dark); border-color: var(--accent-dark); font-size: 17px; padding: 14px 28px; }
+  .start .err { color: var(--danger); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="ar"></div>
+
+<div class="ui">
+  <div class="top">
+    <div class="bar">
+      <select id="session" aria-label="Session"></select>
+      <button id="btnRefresh" title="Load sessions created on the laptop">Refresh</button>
+    </div>
+    <div id="status" class="status">Starting…</div>
+  </div>
+  <div class="bottom" id="bottom" hidden>
+    <div id="lookNow" class="looknow">Point the circle at an image</div>
+    <ol id="recent"></ol>
+  </div>
+</div>
+<div id="cross" class="cross" hidden></div>
+
+<div id="startScreen" class="start">
+  <h1>AR viewer</h1>
+  <p id="startInfo">Loading images…</p>
+  <button id="btnStart" disabled>Start camera</button>
+  <p id="clockInfo" style="font-size:13px"></p>
+</div>
+
+<script src="pozyx_db.js"></script>
+<script type="module">
+import * as THREE from 'three';
+import { MindARThree } from 'mindar-image-three';
+import { addLights, buildTargetGroup, mixersIn, centreIsOn } from './ar_scene.js';
+
+const $ = (id) => document.getElementById(id);
+const db = window.pozyxDb;
+const KEY = 'arviewer.v1';
+const MIN_LOOK_MS = 300;   // shorter glances are not saved
+const GRACE_MS = 400;      // a look survives the image being lost for this long (tracking flicker)
+
+let published = null, targetsById = new Map(), overlaysBy = new Map();
+let dbSessions = [], current = '', outbox = [], recent = [], clockFix = null;
+let sending = false, retrying = false, retryTimer = null, problem = '';
+
+const hasDb = () => !!(db && db.configured());
+const now = () => Date.now() + (clockFix ? Math.round(clockFix.offset) : 0);   // server clock
+const newId = () => { try { return crypto.randomUUID(); } catch (e) { return Date.now().toString(36) + Math.random().toString(36).slice(2, 12); } };
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+const pad = (n, w = 2) => String(n).padStart(w, '0');
+function hms(ms) { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+
+/* ---------- copy on this phone ---------- */
+function loadLocal() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (!s) return;
+    dbSessions = s.dbSessions || [];
+    current = typeof s.current === 'string' ? s.current : '';
+    outbox = s.outbox || [];
+    recent = s.recent || [];
+    if (s.clockFix && Number.isFinite(s.clockFix.offset)) clockFix = s.clockFix;
+  } catch (e) {}
+}
+function saveLocal() {
+  try { localStorage.setItem(KEY, JSON.stringify({ dbSessions, current, outbox, recent: recent.slice(0, 20), clockFix })); } catch (e) {}
+}
+
+/* ---------- sessions (created in the Pozyx live map) ---------- */
+function nameOf(id) { const x = dbSessions.find(q => q.id === id); return x ? x.name : id; }
+async function loadSessions(manual) {
+  if (!hasDb()) return;
+  try {
+    const before = new Set(dbSessions.map(x => x.id));
+    dbSessions = await db.request('sessions?select=id,name,created_at_unix_ms&order=created_at_unix_ms.desc&limit=100');
+    const fresh = dbSessions.find(x => !before.has(x.id)) || (!current && dbSessions[0]);
+    if (manual && fresh) current = fresh.id;
+    if (current && !dbSessions.some(x => x.id === current)) current = '';
+    saveLocal();
+    renderSessions();
+    if (manual) flashStatus(`Looks go to "${current ? nameOf(current) : 'No session'}".`);
+  } catch (e) {
+    if (manual) flashStatus(`Could not load sessions: ${e.message}`);
+  }
+}
+function renderSessions() {
+  let h = '';
+  for (const x of dbSessions) h += `<option value="${esc(x.id)}">${esc(x.name)}</option>`;
+  h += '<option value="">No session</option>';
+  $('session').innerHTML = h;
+  $('session').value = current;
+}
+
+/* ---------- shared clock ---------- */
+async function syncClock() {
+  if (!hasDb()) return;
+  try {
+    clockFix = await db.measureClock();
+    saveLocal();
+    const o = clockFix.offset / 1000;
+    $('clockInfo').textContent = `Synced to the server clock: this phone is ${Math.abs(o).toFixed(3)} s ${o > 0 ? 'behind' : 'ahead'}, corrected.`;
+  } catch (e) {
+    $('clockInfo').textContent = /server_time_ms/.test(e.message)
+      ? 'Clock sync is off: run the updated supabase/schema.sql in Supabase.' : `Clock sync failed (${e.message}).`;
+  }
+}
+
+/* ---------- saving looks ---------- */
+async function send() {
+  if (sending || !hasDb() || !outbox.length) { renderStatus(); return; }
+  sending = true;
+  renderStatus();
+  while (outbox.length) {
+    const rows = outbox.slice(0, 50);
+    try {
+      await db.upsert('looks', rows, 'id', { keepalive: true });
+      outbox.splice(0, rows.length);
+      retrying = false;
+      problem = '';
+      saveLocal();
+    } catch (e) {
+      retrying = true;
+      problem = e.message || String(e);
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(send, 4000 + Math.random() * 3000);
+      break;
+    }
+  }
+  sending = false;
+  renderStatus();
+}
+let statusMsg = '', statusTimer = null;
+function flashStatus(text) {
+  statusMsg = text;
+  renderStatus();
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => { statusMsg = ''; renderStatus(); }, 4000);
+}
+function renderStatus() {
+  const el = $('status');
+  let text, cls = '';
+  if (statusMsg) text = statusMsg;
+  else if (!hasDb()) text = 'No database set in pozyx_db.js.';
+  else if (outbox.length) {
+    text = retrying ? `${outbox.length} look${outbox.length === 1 ? '' : 's'} not uploaded yet (${problem}). Retrying…` : 'Uploading…';
+    cls = 'wait';
+  } else { text = `Saving looks to "${current ? nameOf(current) : 'No session'}"`; cls = 'ok'; }
+  el.textContent = text;
+  el.className = 'status ' + cls;
+}
+
+/* ---------- looks ---------- */
+let look = null;   // {idx, start, last}
+function updateLook(idx) {
+  const t = now();
+  if (look && idx === look.idx) { look.last = t; return; }
+  if (look && idx !== null) { finishLook(look, t); look = null; }            // moved straight to another image
+  else if (look && t - look.last > GRACE_MS) { finishLook(look, look.last); look = null; }
+  if (!look && idx !== null) look = { idx, start: t, last: t };
+}
+function finishLook(l, end) {
+  if (end - l.start < MIN_LOOK_MS) return;
+  const target = targetsById.get(published.target_ids[l.idx]);
+  const row = {
+    id: newId(), session_id: current || null, session_name: current ? nameOf(current) : null,
+    target_id: target.id, target_name: target.name, start_unix_ms: Math.round(l.start), end_unix_ms: Math.round(end),
+    clock_offset_ms: clockFix ? Math.round(clockFix.offset) : null,
+  };
+  recent.unshift({ name: target.name, start: row.start_unix_ms, ms: row.end_unix_ms - row.start_unix_ms });
+  recent = recent.slice(0, 20);
+  if (hasDb()) outbox.push(row);
+  saveLocal();
+  renderRecent();
+  send();
+}
+function renderRecent() {
+  $('recent').innerHTML = recent.slice(0, 4).map(r =>
+    `<li><span>${esc(r.name)}</span><span class="d">${hms(r.start)} · ${(r.ms / 1000).toFixed(1)} s</span></li>`).join('');
+}
+
+/* ---------- AR ---------- */
+async function loadContent() {
+  if (!hasDb()) { $('startInfo').textContent = 'No database set in pozyx_db.js.'; return; }
+  try {
+    published = (await db.request('ar_published?select=*&id=eq.current'))[0] || null;
+    if (!published) { $('startInfo').textContent = 'Nothing published yet. In the AR editor, upload images and click "Publish to phone".'; return; }
+    const targets = await db.request('ar_targets?select=*');
+    targetsById = new Map(targets.map(t => [t.id, t]));
+    for (const o of await db.request('ar_overlays?select=*')) {
+      if (!overlaysBy.has(o.target_id)) overlaysBy.set(o.target_id, []);
+      overlaysBy.get(o.target_id).push(o);
+    }
+  } catch (e) {
+    $('startInfo').textContent = `Could not load the AR content: ${e.message}`;
+    $('startInfo').className = 'err';
+    return;
+  }
+  const n = published.target_ids.filter(id => targetsById.has(id)).length;
+  $('startInfo').textContent = `${n} image${n === 1 ? '' : 's'} ready. Pick the session at the top, start the camera, then point the circle at an image.`;
+  $('btnStart').disabled = false;
+}
+
+async function startAR() {
+  $('btnStart').disabled = true;
+  $('startInfo').textContent = 'Starting the camera…';
+  try {
+    const mind = new MindARThree({
+      container: $('ar'), imageTargetSrc: db.fileUrl(published.mind_path), maxTrack: 2,
+      uiLoading: 'no', uiScanning: 'no', uiError: 'no',
+    });
+    const { renderer, scene, camera } = mind;
+    addLights(scene);
+    const found = new Set(), anchors = [];
+    let mixers = [];
+    for (let i = 0; i < published.target_ids.length; i++) {
+      const target = targetsById.get(published.target_ids[i]);
+      if (!target) continue;   // deleted after publishing
+      const anchor = mind.addAnchor(i);
+      anchors[i] = { anchor, target };
+      buildTargetGroup(target, overlaysBy.get(target.id) || [], (p) => db.fileUrl(p)).then(g => {
+        anchor.group.add(g);
+        mixers = mixers.concat(mixersIn(g));
+      });
+      anchor.onTargetFound = () => found.add(i);
+      anchor.onTargetLost = () => found.delete(i);
+    }
+    await mind.start();
+    $('startScreen').hidden = true;
+    $('cross').hidden = false;
+    $('bottom').hidden = false;
+    keepAwake();
+    const clock = new THREE.Clock();
+    let uiAt = 0;
+    renderer.setAnimationLoop(() => {
+      const dt = clock.getDelta();
+      for (const m of mixers) m.update(dt);
+      scene.updateMatrixWorld();
+      let pointed = null;
+      for (const i of found) if (centreIsOn(anchors[i].target, anchors[i].anchor.group, camera)) { pointed = i; break; }
+      updateLook(pointed);
+      renderer.render(scene, camera);
+      const t = performance.now();
+      if (t - uiAt > 100) { uiAt = t; renderLookNow(); }
+    });
+    window.__ar = { mind, found, anchors, get look() { return look; } };   // for testing
+  } catch (e) {
+    $('startInfo').textContent = `Could not start the camera: ${e.message || e}. Allow camera access for this page and try again.`;
+    $('startInfo').className = 'err';
+    $('btnStart').disabled = false;
+  }
+}
+function renderLookNow() {
+  const el = $('lookNow');
+  const on = !!look;
+  $('cross').classList.toggle('on', on);
+  el.classList.toggle('on', on);
+  el.textContent = on
+    ? `Looking at ${targetsById.get(published.target_ids[look.idx]).name} · ${((now() - look.start) / 1000).toFixed(1)} s`
+    : 'Point the circle at an image';
+}
+
+let wake = null;
+async function keepAwake() {
+  try {
+    if (!wake && document.visibilityState === 'visible' && navigator.wakeLock) {
+      wake = await navigator.wakeLock.request('screen');
+      wake.addEventListener('release', () => { wake = null; });
+    }
+  } catch (e) {}
+}
+
+/* ---------- wiring ---------- */
+$('btnStart').onclick = startAR;
+$('btnRefresh').onclick = () => loadSessions(true);
+$('session').onchange = () => { current = $('session').value; saveLocal(); renderStatus(); };
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { if (look) { finishLook(look, look.last); look = null; } send(); }
+  else { keepAwake(); send(); loadSessions(); syncClock(); }
+});
+window.addEventListener('online', send);
+window.addEventListener('pagehide', send);
+
+loadLocal();
+renderSessions();
+renderRecent();
+renderStatus();
+loadSessions();
+syncClock();
+setInterval(syncClock, 5 * 60 * 1000);
+send();
+loadContent();
+</script>
+</body>
+</html>

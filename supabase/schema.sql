@@ -116,3 +116,96 @@ drop policy if exists "pages delete" on sessions;
 drop policy if exists "pages delete" on recordings;
 create policy "pages delete" on sessions   for delete to anon using (true);
 create policy "pages delete" on recordings for delete to anon using (true);
+
+-- ===================== AR (ar_editor.html and ar_viewer.html) =====================
+
+-- Images the phone camera recognises (printed posters). The image file is in storage bucket "ar".
+create table if not exists ar_targets (
+  id                 text primary key,
+  name               text not null,
+  image_path         text not null,                 -- path inside the "ar" bucket
+  width_px           integer not null,
+  height_px          integer not null,
+  created_at_unix_ms bigint not null
+);
+
+-- What appears on top of each image. Positions: x, y from the image's top-left (0..1 of width/height);
+-- z = height above the image and size = width, both as a fraction of the image width.
+create table if not exists ar_overlays (
+  id         text primary key,
+  target_id  text not null references ar_targets (id) on delete cascade,
+  kind       text not null check (kind in ('text', 'image', 'model')),
+  x double precision not null default 0.5,
+  y double precision not null default 0.5,
+  z double precision not null default 0,
+  size       double precision not null default 0.3,
+  rot_x double precision not null default 0,       -- degrees
+  rot_y double precision not null default 0,
+  rot_z double precision not null default 0,
+  text       text,                                  -- kind = text
+  color      text default '#ffffff',
+  background text default '#000000aa',
+  asset_path text,                                  -- kind = image or model: file in the "ar" bucket
+  asset_name text,
+  updated_at_unix_ms bigint
+);
+create index if not exists ar_overlays_target on ar_overlays (target_id);
+
+-- The recognition file the phone downloads, made by "Publish to phone" in the editor.
+-- target_ids lists the targets in the order they are inside the file.
+create table if not exists ar_published (
+  id                   text primary key,            -- always 'current'
+  mind_path            text not null,
+  target_ids           text[] not null,
+  published_at_unix_ms bigint not null
+);
+
+-- Looks recorded by the phone: which image was in the centre of the screen, and for how long.
+create table if not exists looks (
+  id              text primary key,
+  session_id      text,
+  session_name    text,
+  target_id       text,
+  target_name     text,
+  start_unix_ms   bigint not null,
+  end_unix_ms     bigint not null,
+  duration_ms     bigint generated always as (end_unix_ms - start_unix_ms) stored,
+  start_time      timestamptz generated always as (to_timestamp(start_unix_ms / 1000.0)) stored,
+  clock_offset_ms double precision,
+  uploaded_at     timestamptz not null default now()
+);
+create index if not exists looks_start on looks (start_unix_ms);
+create index if not exists looks_session on looks (session_id);
+
+alter table ar_targets   enable row level security;
+alter table ar_overlays  enable row level security;
+alter table ar_published enable row level security;
+alter table looks        enable row level security;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['ar_targets', 'ar_overlays', 'ar_published', 'looks'] loop
+    execute format('drop policy if exists "pages read" on %I', t);
+    execute format('drop policy if exists "pages add" on %I', t);
+    execute format('drop policy if exists "pages update" on %I', t);
+    execute format('drop policy if exists "pages delete" on %I', t);
+    execute format('create policy "pages read" on %I for select to anon using (true)', t);
+    execute format('create policy "pages add" on %I for insert to anon with check (true)', t);
+    execute format('create policy "pages update" on %I for update to anon using (true) with check (true)', t);
+    execute format('create policy "pages delete" on %I for delete to anon using (true)', t);
+  end loop;
+end $$;
+
+-- File storage for images, 3D models and the recognition file. Public to read.
+insert into storage.buckets (id, name, public) values ('ar', 'ar', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "ar read"   on storage.objects;
+drop policy if exists "ar add"    on storage.objects;
+drop policy if exists "ar update" on storage.objects;
+drop policy if exists "ar delete" on storage.objects;
+create policy "ar read"   on storage.objects for select to anon using (bucket_id = 'ar');
+create policy "ar add"    on storage.objects for insert to anon with check (bucket_id = 'ar');
+create policy "ar update" on storage.objects for update to anon using (bucket_id = 'ar') with check (bucket_id = 'ar');
+create policy "ar delete" on storage.objects for delete to anon using (bucket_id = 'ar');

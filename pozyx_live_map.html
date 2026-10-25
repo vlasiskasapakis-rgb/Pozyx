@@ -56,6 +56,13 @@
   .tapmarks { position: absolute; left: 8px; right: 8px; top: -7px; height: 10px; }
   .tapmarks button { position: absolute; top: 0; width: 7px; height: 11px; margin-left: -3px; padding: 0; border: 0; border-radius: 2px; background: var(--tap); cursor: pointer; }
   .mapcard { position: relative; }
+  .lookmarks { position: absolute; left: 8px; right: 8px; bottom: -9px; height: 6px; }
+  .lookmarks button { position: absolute; top: 0; height: 6px; min-width: 3px; padding: 0; border: 0; border-radius: 3px; background: var(--tap); opacity: .55; cursor: pointer; }
+  .looknow { position: absolute; top: 56px; left: 50%; transform: translateX(-50%); border: 2px solid var(--tap); background: var(--panel); color: var(--tap); padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; pointer-events: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  #looksTable tr { cursor: pointer; }
+  #looksTable tr:hover td { background: var(--grid); }
+  #looksTable tr.outside { cursor: default; opacity: .5; }
+  #looksTable td.note { color: var(--tap); font-size: 12px; white-space: normal; }
   .tapflash { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: var(--tap); color: var(--panel); padding: 6px 14px; border-radius: 999px; font-size: 14px; font-weight: 600; pointer-events: none; white-space: nowrap; }
   #tapsTable tr { cursor: pointer; }
   #tapsTable tr.past td { color: var(--muted); }
@@ -104,12 +111,14 @@
 <main>
   <div class="card mapcard">
     <div id="tapFlash" class="tapflash" hidden></div>
+    <div id="lookNow" class="looknow" hidden></div>
     <svg id="map" role="img" aria-label="Map of anchors and tags"></svg>
     <div id="replayBar" class="replay" hidden>
       <button id="btnPlay">Pause</button>
       <div class="seekwrap">
         <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Replay position">
         <div id="tapMarks" class="tapmarks"></div>
+        <div id="lookMarks" class="lookmarks"></div>
       </div>
       <span id="replayTime" class="rtime">0.0 / 0.0 s</span>
       <select id="speed" aria-label="Replay speed">
@@ -119,7 +128,7 @@
         <option value="2">2×</option>
         <option value="4">4×</option>
       </select>
-      <label id="tapShiftWrap" hidden title="Moves all phone taps later (+) or earlier (−), for recordings made before clock sync">Tap shift
+      <label id="tapShiftWrap" hidden title="Moves all phone taps and looks later (+) or earlier (−), for recordings made before clock sync">Phone time shift
         <input type="number" id="tapShift" step="0.1" value="0" style="width:72px; font:inherit; font-size:14px; padding:6px; border-radius:8px; border:1px solid var(--border); background:var(--panel); color:var(--text)"> s</label>
       <span id="replayName" class="rname"></span>
       <button id="btnExitReplay">Exit replay</button>
@@ -129,6 +138,10 @@
     <div class="card" id="tapsCard" hidden>
       <h2>Phone taps</h2>
       <div id="tapsTable"></div>
+    </div>
+    <div class="card" id="looksCard" hidden>
+      <h2>Looks (AR viewer)</h2>
+      <div id="looksTable"></div>
     </div>
     <div class="card">
       <h2>Tags</h2>
@@ -578,7 +591,9 @@ function startReplay(data, name) {
   const nOther = tps.filter(tp => !tp.outside && tp.other).length, nOut = tps.length - nt;
   const tapInfo = !data.taps ? '' : `, ${nt} phone tap${nt === 1 ? '' : 's'}` +
     (nOther ? `, ${nOther} of them saved under another session` : '') + (nOut ? `; ${nOut} more just before or after` : '');
-  setStatus(`Replaying "${name}" (${data.samples.length} positions, ${data.duration.toFixed(1)} s${tapInfo}). Live data is paused.`);
+  const nl = (data.looks || []).filter(l => !l.outside).length;
+  const lookInfo = data.looks ? `, ${nl} look${nl === 1 ? '' : 's'}` : '';
+  setStatus(`Replaying "${name}" (${data.samples.length} positions, ${data.duration.toFixed(1)} s${tapInfo}${lookInfo}). Live data is paused.`);
   seekTo(0);
   replay.playing = true;
   replay.lastFrame = performance.now();
@@ -631,6 +646,7 @@ function updateReplayUI() {
   if (!seeking) $('seek').value = Math.round(replay.t * 1000);
   const clock = replay.data.startUnix ? clockTime(replay.data.startUnix + replay.t * 1000) + ' · ' : '';
   $('replayTime').textContent = `${clock}${replay.t.toFixed(1)} / ${replay.data.duration.toFixed(1)} s`;
+  renderLookNow();
   const passed = (replay.data.taps || []).filter(tp => !tp.outside && tp.t <= replay.t).length;
   if (passed !== replay.tapsPassed) { replay.tapsPassed = passed; renderTapTable(); }
 }
@@ -640,8 +656,11 @@ function exitReplay() {
   replay.playing = false;
   $('replayBar').hidden = true;
   $('tapsCard').hidden = true;
+  $('looksCard').hidden = true;
   $('tapFlash').hidden = true;
+  $('lookNow').hidden = true;
   $('tapMarks').innerHTML = '';
+  $('lookMarks').innerHTML = '';
   $('btnRec').disabled = false;
   $('btnDemo').disabled = false;
   anchors.clear();
@@ -659,7 +678,8 @@ function prepareTaps(data) {
   const taps = data.taps || [];
   const shift = +$('tapShift').value || 0;   // manual correction for older recordings
   for (const tp of taps) { if (tp.t0 === undefined) tp.t0 = tp.t; tp.t = tp.t0 + shift; }
-  $('tapShiftWrap').hidden = !data.taps;
+  prepareLooks(data, shift);
+  $('tapShiftWrap').hidden = !data.taps && !data.looks;
   const byTag = new Map();
   for (const q of data.samples) { if (!byTag.has(q.id)) byTag.set(q.id, []); byTag.get(q.id).push(q); }
   for (const tp of taps) {
@@ -681,6 +701,47 @@ function prepareTaps(data) {
   $('tapsCard').hidden = !data.taps;
   replay.tapsPassed = -1;
   renderTapTable();
+}
+// Looks from the AR viewer: bars under the timeline and a list
+function prepareLooks(data, shift) {
+  const looks = data.looks || [];
+  const dur = Math.max(data.duration, 0.001);
+  for (const lk of looks) {
+    lk.a = lk.a0 + shift;
+    lk.b = lk.b0 + shift;
+    lk.outside = lk.b < 0 ? 'before Record' : lk.a > data.duration + 2 ? 'after Stop' : null;
+  }
+  $('lookMarks').innerHTML = looks.map((lk, i) => {
+    if (lk.outside) return '';
+    const a = Math.max(0, lk.a / dur), b = Math.min(1, lk.b / dur);
+    return `<button style="left:${(a * 100).toFixed(3)}%; width:${((b - a) * 100).toFixed(3)}%" data-i="${i}" title="${esc(lk.name)} · ${(lk.b - lk.a).toFixed(1)} s" aria-label="Jump to look ${i + 1}"></button>`;
+  }).join('');
+  $('looksCard').hidden = !data.looks;
+  let h = '';
+  if (!looks.length) h = '<div class="empty">No looks during this recording.</div>';
+  else {
+    h = '<table><tr><th>Image</th><th>Start</th><th>t (s)</th><th>Length</th><th>Note</th></tr>';
+    looks.forEach((lk, i) => {
+      const note = lk.outside || (lk.other ? `session: ${lk.other}` : '');
+      h += `<tr${lk.outside ? ' class="outside"' : ` data-i="${i}"`}><td>${esc(lk.name)}</td><td class="num">${clockTime(lk.unix).slice(0, 8)}</td>` +
+        `<td class="num">${lk.a.toFixed(2)}</td><td class="num">${(lk.b - lk.a).toFixed(1)} s</td><td class="note">${esc(note)}</td></tr>`;
+    });
+    h += '</table>';
+  }
+  $('looksTable').innerHTML = h;
+}
+function jumpToLook(i) {
+  const lk = replay.data.looks[i];
+  if (!lk || lk.outside) return;
+  replay.playing = false;
+  seekTo(lk.a);
+  updateReplayUI();
+}
+function renderLookNow() {
+  const looks = (replay.active && replay.data.looks) || [];
+  const lk = looks.find(l => !l.outside && replay.t >= l.a && replay.t <= l.b);
+  $('lookNow').hidden = !lk;
+  if (lk) $('lookNow').textContent = `Looking at ${lk.name} · ${(replay.t - lk.a).toFixed(1)} / ${(lk.b - lk.a).toFixed(1)} s`;
 }
 function tapText(tp) { return `${tp.label ? tp.label + ' · ' : ''}${clockTime(tp.unix_ms)}`; }
 function renderTapTable() {
@@ -775,11 +836,12 @@ async function deleteSession() {
   const sid = $('dbSession').value;
   const x = dbSessions.find(q => q.id === sid);
   if (!x) return;
-  if (!confirm(`Delete the session "${x.name}"?\n\nThis also deletes its ${dbRecs.length} recording${dbRecs.length === 1 ? '' : 's'}, their positions, and the phone taps saved in it. This cannot be undone.`)) return;
+  if (!confirm(`Delete the session "${x.name}"?\n\nThis also deletes its ${dbRecs.length} recording${dbRecs.length === 1 ? '' : 's'}, their positions, and the phone taps and AR looks saved in it. This cannot be undone.`)) return;
   try {
     const f = `session_id=eq.${encodeURIComponent(sid)}`;
     await deleteRows('recordings', f);
     await deleteRows('taps', f);
+    await deleteRows('looks', f).catch(() => 0);
     if (!await deleteRows('sessions', `id=eq.${encodeURIComponent(sid)}`)) throw new Error(NO_DELETE);
     if (sessionId === sid) pickSession('');
     setStatus(`Deleted the session "${x.name}".`);
@@ -807,6 +869,10 @@ async function replayFromDb(r) {
     }
     // every tap from 1 minute before to 1 minute after, whatever session the phone had picked
     const tapRows = await pozyxDb.request(`taps?select=unix_ms,label,session_id,session_name&unix_ms=gte.${start - 60000}&unix_ms=lte.${Math.ceil(end) + 60000}&order=unix_ms.asc`);
+    let lookRows = [];
+    try {   // looks from the AR viewer that overlap the recording (any session)
+      lookRows = await pozyxDb.request(`looks?select=target_name,start_unix_ms,end_unix_ms,session_id,session_name&end_unix_ms=gte.${start - 60000}&start_unix_ms=lte.${Math.ceil(end) + 60000}&order=start_unix_ms.asc`);
+    } catch (e) { lookRows = null; }   // no looks table yet
     const samples = pos.map(q => ({ t: (+q.unix_ms - start) / 1000, id: String(q.tag).toUpperCase(), x: +q.x, y: +q.y, z: +q.z }))
       .filter(q => [q.t, q.x, q.y, q.z].every(Number.isFinite)).sort((a, b) => a.t - b.t);
     if (!samples.length) throw new Error('this recording has no positions');
@@ -819,6 +885,10 @@ async function replayFromDb(r) {
         t: (+tp.unix_ms - start) / 1000, unix_ms: +tp.unix_ms, label: tp.label || '',
         other: (tp.session_id || '') === sid ? null : (tp.session_name || 'No session'),
       })),
+      looks: lookRows && lookRows.length ? lookRows.map(lk => ({
+        a0: (+lk.start_unix_ms - start) / 1000, b0: (+lk.end_unix_ms - start) / 1000, unix: +lk.start_unix_ms,
+        name: lk.target_name || 'image', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
+      })) : null,
     };
     startReplay(data, `${sesName} · ${clockTime(start).slice(0, 8)}`);
   } catch (e) {
@@ -1264,6 +1334,8 @@ $('dbRecList').onclick = (e) => {
   if (d) deleteRecording(dbRecs[+d.dataset.del]);
 };
 $('btnDelSession').onclick = deleteSession;
+$('lookMarks').onclick = (e) => { const b = e.target.closest('button[data-i]'); if (b) jumpToLook(+b.dataset.i); };
+$('looksTable').onclick = (e) => { const r = e.target.closest('tr[data-i]'); if (r) jumpToLook(+r.dataset.i); };
 $('tapMarks').onclick = (e) => { const b = e.target.closest('button[data-i]'); if (b) jumpToTap(+b.dataset.i); };
 $('tapsTable').onclick = (e) => { const r = e.target.closest('tr[data-i]'); if (r) jumpToTap(+r.dataset.i); };
 $('sessionSel').onchange = () => pickSession($('sessionSel').value);
