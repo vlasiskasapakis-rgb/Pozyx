@@ -49,6 +49,7 @@
   button.recording { background: var(--danger); border-color: var(--danger); color: var(--panel); font-variant-numeric: tabular-nums; }
   .replay { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
   .replay input[type=range] { flex: 1; min-width: 160px; accent-color: var(--accent); }
+  #sessionSel { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); max-width: 220px; }
   .replay select { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
   .rtime { font-size: 13px; font-variant-numeric: tabular-nums; min-width: 90px; }
   .rname { font-size: 12px; color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -63,6 +64,8 @@
   <button id="btnView">Top view</button>
   <button id="btnDemo">Demo</button>
   <button id="btnClear">Clear trails</button>
+  <select id="sessionSel" hidden aria-label="Session" title="Recordings are saved under this session. Pick the same one on the phone."></select>
+  <button id="btnNewSession" hidden>New session</button>
   <button id="btnRec">● Record</button>
   <button id="btnSaveJson" disabled>Save JSON</button>
   <button id="btnSaveCsv" disabled>Save CSV</button>
@@ -276,6 +279,8 @@ function startRec() {
   rec.anchors = new Map(anchors);
   rec.data = null;
   rec.uploaded = false;
+  rec.sessionId = sessionId;
+  renderSessions();
   updateRecUI();
 }
 function stopRec() {
@@ -287,6 +292,7 @@ function stopRec() {
     ? ` Note: ${rec.unsynced} positions had no Arduino clock data, so they use the time they arrived (less exact). Upload the latest sketch.`
     : '';
   setStatus(`Recorded ${rec.data.samples.length} positions over ${rec.data.duration.toFixed(1)} s. Click "Save JSON" or "Save CSV" to keep it.${rec.note}`, !!rec.unsynced);
+  renderSessions();
   if (hasDb() && rec.data.samples.length) uploadRecording();
 }
 function recAnchor(id, a) { if (rec.on) rec.anchors.set(id, a); }
@@ -317,6 +323,7 @@ function buildRecording() {
     units: 'meters',
     coordinates: 'Pozyx: x and y along the floor, z up. Origin = floor directly below anchor A1. In Unity use (x, z, y).',
     time: 'unix_ms = real time of the measurement (milliseconds since 1970-01-01 UTC, from this computer\'s clock). time = the same as local date and time. t = seconds since Record was pressed.',
+    session: rec.sessionId || null,
     startedAt: isoLocal(start),
     startedAtUnixMs: start,
     duration: r3(dur),
@@ -355,7 +362,7 @@ async function uploadRecording() {
   const all = [...rows.values()];
   try {
     setStatus(`Uploading ${all.length} positions to the database…`);
-    await pozyxDb.upsert('recordings', [{ id, started_at_unix_ms: d.startedAtUnixMs, duration_s: d.duration }], 'id');
+    await pozyxDb.upsert('recordings', [{ id, session_id: rec.sessionId || null, started_at_unix_ms: d.startedAtUnixMs, duration_s: d.duration }], 'id');
     if (d.anchors.length) {
       await pozyxDb.upsert('anchors', d.anchors.map(a => ({ recording_id: id, anchor_id: a.id, x: a.x, y: a.y, z: a.z })), 'recording_id,anchor_id');
     }
@@ -364,7 +371,8 @@ async function uploadRecording() {
       setStatus(`Uploading to the database… ${Math.min(i + 1000, all.length)} / ${all.length} positions`);
     }
     rec.uploaded = true;
-    setStatus(`Saved recording "${id}" to the database (${all.length} positions).${rec.note || ''}`, !!rec.unsynced);
+    const ses = dbSessions.find(x => x.id === rec.sessionId);
+    setStatus(`Saved recording "${id}" to the database (${all.length} positions${ses ? `, session "${ses.name}"` : ', no session'}).${rec.note || ''}`, !!rec.unsynced);
   } catch (e) {
     setStatus(`Could not upload to the database: ${e.message}. Check the internet connection, then click "Upload" to try again. The recording is still here, and Save CSV works too.`, true);
   }
@@ -397,6 +405,51 @@ function saveCsv() {
   for (const a of d.anchors) lines.push(`0,anchor,${a.id},${a.x},${a.y},${a.z},,`);
   for (const s of d.samples) lines.push(`${s.t},tag,${s.id},${s.x},${s.y},${s.z},${s.unix_ms},${s.time}`);
   download(fileStamp(rec.startedAt) + '.csv', lines.join('\n') + '\n', 'text/csv');
+}
+
+/* ---------- sessions ---------- */
+// A session groups recordings with the taps from the phone. Create it here, pick it on the phone.
+let dbSessions = [];
+let sessionId = (() => { try { return localStorage.getItem('pozyx.session') || ''; } catch (e) { return ''; } })();
+
+async function loadSessions() {
+  if (!hasDb()) return;
+  try {
+    dbSessions = await pozyxDb.request('sessions?select=id,name,created_at_unix_ms&order=created_at_unix_ms.desc&limit=100');
+  } catch (e) {
+    setStatus(`Could not load sessions from the database: ${e.message}`, true);
+  }
+  renderSessions();
+}
+function renderSessions() {
+  const sel = $('sessionSel');
+  sel.hidden = $('btnNewSession').hidden = !hasDb();
+  let h = '<option value="">No session</option>';
+  for (const x of dbSessions) h += `<option value="${esc(x.id)}">${esc(x.name)}</option>`;
+  sel.innerHTML = h;
+  if (!dbSessions.some(x => x.id === sessionId)) sessionId = '';
+  sel.value = sessionId;
+  sel.disabled = $('btnNewSession').disabled = rec.on;   // a recording keeps the session it started with
+}
+function pickSession(id) {
+  sessionId = id;
+  try { localStorage.setItem('pozyx.session', id); } catch (e) {}
+  renderSessions();
+}
+async function newSession() {
+  const now = new Date();
+  const name = prompt('Name for the new session (the phone shows this name):',
+    now.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+  if (name === null) return;
+  const x = { id: fileStamp(now).replace('pozyx_', 'session_'), name: name.trim() || fileStamp(now), created_at_unix_ms: now.getTime() };
+  try {
+    await pozyxDb.upsert('sessions', [x], 'id');
+    dbSessions.unshift(x);
+    pickSession(x.id);
+    setStatus(`Session "${x.name}" created. On the phone, refresh the session list and pick it, then press Record here.`);
+  } catch (e) {
+    setStatus(`Could not create the session: ${e.message}. Check the internet connection and try again.`, true);
+  }
 }
 
 /* ---------- replay ---------- */
@@ -917,6 +970,8 @@ $('btnRec').onclick = () => (rec.on ? stopRec() : startRec());
 $('btnSaveJson').onclick = saveJson;
 $('btnSaveCsv').onclick = saveCsv;
 $('btnUpload').onclick = uploadRecording;
+$('btnNewSession').onclick = newSession;
+$('sessionSel').onchange = () => pickSession($('sessionSel').value);
 $('btnOpen').onclick = () => $('fileOpen').click();
 $('fileOpen').onchange = async (e) => {
   const f = e.target.files[0];
@@ -941,6 +996,8 @@ $('seek').addEventListener('input', () => { seeking = true; seekTo(+$('seek').va
 $('seek').addEventListener('change', () => { seeking = false; });
 $('btnExitReplay').onclick = exitReplay;
 updateRecUI();
+renderSessions();
+loadSessions();
 
 setView('3d');
 </script>

@@ -70,6 +70,21 @@ The hosted copy on claude.ai also backs taps up to the account and has
 **Save CSV**. Opened as a plain file, taps stay on the phone; use
 **Copy CSV** to get them out.
 
+## 4. Database (Supabase)
+
+Both pages save to a Supabase database set in `pozyx_db.js`.
+
+1. Once: Supabase → **SQL Editor** → paste `supabase/schema.sql` → **Run**.
+   Run it again after updates; it is safe to repeat.
+2. Laptop: in the live map, click **New session** and give it a name.
+3. Phone: tap **Refresh**, pick the same session, then tap during the test.
+4. Laptop: **Record** / **Stop**. The recording uploads to the selected session
+   (or click **Upload** to retry).
+
+Tables: `sessions`, `recordings`, `anchors`, `positions`, `taps`. Taps and
+recordings carry the `session_id`; positions belong to a recording. See
+`supabase/sync_examples.sql` for queries that line taps up with positions.
+
 ## Syncing tips
 
 - Both files use the same `unix_ms`, so rows can be matched directly.

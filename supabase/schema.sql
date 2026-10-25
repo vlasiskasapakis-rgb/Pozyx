@@ -1,7 +1,16 @@
 -- Pozyx + phone tap database for Supabase.
--- Run once: Supabase dashboard → SQL Editor → New query → paste this file → Run.
+-- Run once (running it again is safe; it also updates a database made with an older version): Supabase dashboard → SQL Editor → New query → paste this file → Run.
 -- All times are Unix milliseconds (unix_ms) from the device clocks; `time` columns
 -- show the same moment as a timestamp for reading and joining.
+
+-- Sessions: created in pozyx_live_map.html, picked on the phone in sync_marker.html.
+-- Recordings and taps carry the session id, so you know which belong together.
+create table if not exists sessions (
+  id                 text primary key,              -- e.g. session_2026-10-25_16-03-12
+  name               text not null,
+  created_at_unix_ms bigint not null,
+  created_at         timestamptz generated always as (to_timestamp(created_at_unix_ms / 1000.0)) stored
+);
 
 -- One row per recording made with pozyx_live_map.html
 create table if not exists recordings (
@@ -11,6 +20,8 @@ create table if not exists recordings (
   duration_s         double precision,
   uploaded_at        timestamptz not null default now()
 );
+alter table recordings add column if not exists session_id text references sessions (id) on delete set null;
+create index if not exists recordings_session on recordings (session_id);
 
 -- Anchor positions used during a recording (meters)
 create table if not exists anchors (
@@ -35,7 +46,7 @@ create index if not exists positions_unix_ms on positions (unix_ms);
 -- Button taps from sync_marker.html on the phone
 create table if not exists taps (
   id           text primary key,                    -- made on the phone, so retries never duplicate
-  session_id   text not null,
+  session_id   text,                                -- the session picked on the phone (empty = none)
   session_name text,
   unix_ms      bigint not null,
   time         timestamptz generated always as (to_timestamp(unix_ms / 1000.0)) stored,
@@ -43,13 +54,23 @@ create table if not exists taps (
   uploaded_at  timestamptz not null default now()
 );
 create index if not exists taps_unix_ms on taps (unix_ms);
+alter table taps alter column session_id drop not null;   -- for databases made with the first version
+create index if not exists taps_session on taps (session_id);
 
 -- Access: the pages use the public (anon/publishable) key, so these policies let anyone
 -- who has that key read and add data. Fine for a personal project; don't store secrets here.
+alter table sessions   enable row level security;
 alter table recordings enable row level security;
 alter table anchors    enable row level security;
 alter table positions  enable row level security;
 alter table taps       enable row level security;
+
+drop policy if exists "pages read"   on sessions;
+drop policy if exists "pages add"    on sessions;
+drop policy if exists "pages update" on sessions;
+create policy "pages read"   on sessions for select to anon using (true);
+create policy "pages add"    on sessions for insert to anon with check (true);
+create policy "pages update" on sessions for update to anon using (true) with check (true);
 
 drop policy if exists "pages read"   on recordings;
 drop policy if exists "pages add"    on recordings;

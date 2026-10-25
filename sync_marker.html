@@ -123,7 +123,7 @@
   <div class="row">
     <label for="session" class="sr">Session</label>
     <select id="session"></select>
-    <button id="btnNew" class="ghost" type="button">New session</button>
+    <button id="btnNew" class="ghost" type="button" title="Load sessions created on the laptop">Refresh</button>
   </div>
 
   <div class="field">
@@ -147,7 +147,7 @@
 
   <section class="log">
     <h2>Taps <span id="count"></span></h2>
-    <div id="empty" class="empty">No taps in this session yet. Press Tap at the moment something happens, for example when you start a Pozyx recording or the tag hits the floor.</div>
+    <div id="empty" class="empty">No taps in this session yet. Pick the session you created in the Pozyx live map (Refresh if it is missing), then press Tap at the moment something happens.</div>
     <ol id="list"></ol>
   </section>
 
@@ -159,8 +159,11 @@
 const $ = (id) => document.getElementById(id);
 const KEY = 'syncmarker.v1';
 
-const sessions = new Map();   // id -> {id, name, created, taps: [{id, unix_ms, label}]}
-let current = null;           // selected session; null = a new one starts on the next tap
+// Sessions are created in the Pozyx live map and loaded from the database; pick one here.
+let dbSessions = [];          // [{id, name, created_at_unix_ms}] from the database (cached on the phone)
+const taps = new Map();       // session id ('' = no session) -> [{id, unix_ms, label}] tapped on this phone
+const localNames = new Map(); // names of sessions that only exist on this phone (older version)
+let current = '';             // selected session id, '' = no session
 let outbox = [];              // database changes not sent yet: {op: 'add', row} or {op: 'delete', id}
 let sending = false, retrying = false, retryTimer = null, dbProblem = '';
 const hasDb = () => !!(window.pozyxDb && pozyxDb.configured());
@@ -181,9 +184,6 @@ function fileStamp(ms) {
   const d = new Date(ms);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
 }
-function sessionName(ms) {
-  return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function newId() {
   try { return crypto.randomUUID(); } catch (e) { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12); }
@@ -194,18 +194,24 @@ function loadLocal() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY) || 'null');
     if (!s) return;
-    for (const x of s.sessions || []) {
-      for (const t of x.taps || []) if (!t.id) t.id = newId();   // taps saved by an older version
-      sessions.set(x.id, x);
+    for (const x of s.sessions || []) {   // older version: sessions made on the phone
+      for (const t of x.taps || []) if (!t.id) t.id = newId();
+      taps.set(x.id, x.taps || []);
+      localNames.set(x.id, x.name);
     }
+    for (const [k, v] of Object.entries(s.taps || {})) taps.set(k, v);
+    for (const [k, v] of Object.entries(s.localNames || {})) localNames.set(k, v);
+    if (Array.isArray(s.dbSessions)) dbSessions = s.dbSessions;
     if (Array.isArray(s.outbox)) outbox = s.outbox;
-    if (s.current && sessions.has(s.current)) current = s.current;
+    if (typeof s.current === 'string') current = s.current;
     if (typeof s.label === 'string') $('label').value = s.label;
   } catch (e) {}
 }
 function saveLocal() {
   try {
-    localStorage.setItem(KEY, JSON.stringify({ sessions: [...sessions.values()], outbox, current, label: $('label').value }));
+    localStorage.setItem(KEY, JSON.stringify({
+      taps: Object.fromEntries(taps), localNames: Object.fromEntries(localNames), dbSessions, outbox, current, label: $('label').value,
+    }));
   } catch (e) {}
 }
 
@@ -214,18 +220,14 @@ function onTap(e) {
   // Use the time of the touch itself (the event's own timestamp), not when this code runs.
   const age = performance.now() - e.timeStamp;
   const unix = Math.round(Date.now() - (age >= 0 && age < 1000 ? age : 0));
-  if (!current || !sessions.has(current)) {
-    current = 's-' + unix;
-    sessions.set(current, { id: current, name: sessionName(unix), created: unix, taps: [] });
-  }
-  const s = sessions.get(current);
+  if (!taps.has(current)) taps.set(current, []);
   const tap = { id: newId(), unix_ms: unix, label: $('label').value.trim() };
-  s.taps.push(tap);
+  taps.get(current).push(tap);
   try { navigator.vibrate && navigator.vibrate(20); } catch (err) {}
   const b = $('tap');
   b.classList.remove('hit'); void b.offsetWidth; b.classList.add('hit');
   keepAwake();
-  queue({ op: 'add', row: { id: tap.id, session_id: s.id, session_name: s.name, unix_ms: tap.unix_ms, label: tap.label } });
+  queue({ op: 'add', row: { id: tap.id, session_id: current || null, session_name: current ? nameOf(current) : null, unix_ms: tap.unix_ms, label: tap.label } });
 }
 function queue(change) {
   if (hasDb()) outbox.push(change);
@@ -267,30 +269,51 @@ async function send() {
   renderStatus();
 }
 
+/* ---------- sessions ---------- */
+function nameOf(id) {
+  const x = dbSessions.find(q => q.id === id);
+  return x ? x.name : localNames.get(id) || id;
+}
+async function loadSessions(manual) {
+  if (!hasDb()) return;
+  try {
+    dbSessions = await pozyxDb.request('sessions?select=id,name,created_at_unix_ms&order=created_at_unix_ms.desc&limit=100');
+    saveLocal();
+    render();
+    if (manual) showMsg(dbSessions.length ? `${dbSessions.length} session${dbSessions.length === 1 ? '' : 's'} loaded.` : 'No sessions yet. Create one in the Pozyx live map on the laptop.');
+  } catch (e) {
+    if (manual) showMsg(`Could not load sessions: ${e.message}`);
+  }
+}
+
 /* ---------- drawing ---------- */
 function render() {
   const sel = $('session');
-  const all = [...sessions.values()].sort((a, b) => b.created - a.created);
-  let opts = current ? '' : '<option value="">New session · starts on the next tap</option>';
-  for (const s of all) opts += `<option value="${esc(s.id)}">${esc(s.name)} · ${s.taps.length} tap${s.taps.length === 1 ? '' : 's'}</option>`;
+  const count = (id) => { const n = (taps.get(id) || []).length; return n ? ` · ${n} tap${n === 1 ? '' : 's'}` : ''; };
+  let opts = '';
+  for (const x of dbSessions) opts += `<option value="${esc(x.id)}">${esc(x.name)}${count(x.id)}</option>`;
+  opts += `<option value="">No session${count('')}</option>`;
+  for (const [id, list] of taps) {   // taps kept on this phone for sessions not in the list
+    if (id && list.length && !dbSessions.some(x => x.id === id)) opts += `<option value="${esc(id)}">${esc(nameOf(id))} (this phone)${count(id)}</option>`;
+  }
+  if (current && !dbSessions.some(x => x.id === current) && !(taps.get(current) || []).length) current = '';
   sel.innerHTML = opts;
-  sel.value = current || '';
+  sel.value = current;
 
-  const s = current && sessions.get(current);
-  const taps = s ? s.taps : [];
+  const list = taps.get(current) || [];
   let rows = '';
-  for (let i = taps.length - 1; i >= 0; i--) {
-    const t = taps[i], prev = taps[i - 1];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const t = list[i], prev = list[i - 1];
     rows += `<li><span class="n">${i + 1}</span><span class="time">${hms(t.unix_ms)}</span>` +
       `<span class="delta">${prev ? '+' + ((t.unix_ms - prev.unix_ms) / 1000).toFixed(3) + ' s' : ''}</span>` +
       `<span class="unix">${t.unix_ms}</span><span class="lbl">${esc(t.label || '')}</span></li>`;
   }
   $('list').innerHTML = rows;
-  $('empty').hidden = taps.length > 0;
-  $('count').textContent = taps.length ? `· ${taps.length}` : '';
-  const last = taps[taps.length - 1];
-  $('tapLast').textContent = last ? `#${taps.length} · ${hms(last.unix_ms)}` : 'Logs the moment you touch it';
-  $('btnUndo').disabled = $('btnCopy').disabled = $('btnSave').disabled = !taps.length;
+  $('empty').hidden = list.length > 0;
+  $('count').textContent = list.length ? `· ${list.length}` : '';
+  const last = list[list.length - 1];
+  $('tapLast').textContent = last ? `#${list.length} · ${hms(last.unix_ms)}` : 'Logs the moment you touch it';
+  $('btnUndo').disabled = $('btnCopy').disabled = $('btnSave').disabled = !list.length;
   renderStatus();
 }
 
@@ -318,9 +341,10 @@ function showMsg(text) {
 
 /* ---------- export ---------- */
 function csvCell(v) { v = String(v); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; }
-function csvFor(s) {
-  const rows = ['n,unix_ms,time,label'];
-  s.taps.forEach((t, i) => rows.push(`${i + 1},${t.unix_ms},${isoLocal(t.unix_ms)},${csvCell(t.label)}`));
+function csvFor(id) {
+  const rows = ['n,unix_ms,time,label,session'];
+  const name = id ? csvCell(nameOf(id)) : '';
+  (taps.get(id) || []).forEach((t, i) => rows.push(`${i + 1},${t.unix_ms},${isoLocal(t.unix_ms)},${csvCell(t.label)},${name}`));
   return rows.join('\n') + '\n';
 }
 
@@ -353,23 +377,17 @@ $('tap').addEventListener('keydown', (e) => {
 $('tap').addEventListener('contextmenu', (e) => e.preventDefault());
 
 $('btnUndo').onclick = () => {
-  const s = sessions.get(current);
-  if (!s || !s.taps.length) return;
-  const t = s.taps.pop();
-  showMsg(`Removed tap ${s.taps.length + 1} (${hms(t.unix_ms)}).`);
+  const list = taps.get(current);
+  if (!list || !list.length) return;
+  const t = list.pop();
+  showMsg(`Removed tap ${list.length + 1} (${hms(t.unix_ms)}).`);
   const waiting = outbox.findIndex(c => c.op === 'add' && c.row.id === t.id);
   if (waiting >= 0 && !(sending && waiting === 0)) { outbox.splice(waiting, 1); saveLocal(); render(); }   // never sent: just drop it
   else queue({ op: 'delete', id: t.id });
 };
-$('btnNew').onclick = () => {
-  current = null;
-  $('csvOut').hidden = true;
-  saveLocal();
-  render();
-  showMsg('A new session starts with your next tap.');
-};
+$('btnNew').onclick = () => loadSessions(true);
 $('session').onchange = () => {
-  current = $('session').value || null;
+  current = $('session').value;
   $('csvOut').hidden = true;
   saveLocal();
   render();
@@ -378,32 +396,35 @@ $('label').addEventListener('input', saveLocal);
 $('label').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
 
 $('btnCopy').onclick = () => {
-  const s = sessions.get(current);
-  if (!s || !s.taps.length) return;
-  const text = csvFor(s);
+  const list = taps.get(current) || [];
+  if (!list.length) return;
+  const text = csvFor(current);
   const fallback = () => {
     const ta = $('csvOut');
     ta.value = text; ta.hidden = false; ta.focus(); ta.select();
     showMsg('Copying is blocked here. The CSV is selected below: copy it from there.');
   };
   try {
-    navigator.clipboard.writeText(text).then(() => showMsg(`Copied ${s.taps.length} taps as CSV.`), fallback);
+    navigator.clipboard.writeText(text).then(() => showMsg(`Copied ${list.length} taps as CSV.`), fallback);
   } catch (e) { fallback(); }
 };
 $('btnSave').onclick = () => {
-  const s = sessions.get(current);
-  if (!s || !s.taps.length) return;
+  const list = taps.get(current) || [];
+  if (!list.length) return;
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csvFor(s)], { type: 'text/csv' }));
-  a.download = `sync_taps_${fileStamp(s.created)}.csv`;
+  a.href = URL.createObjectURL(new Blob([csvFor(current)], { type: 'text/csv' }));
+  a.download = `sync_taps_${(current || 'no-session').replace(/^session_/, '')}_${fileStamp(list[0].unix_ms)}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  showMsg(`Saved ${s.taps.length} taps as CSV.`);
+  showMsg(`Saved ${list.length} taps as CSV.`);
 };
 
-document.addEventListener('visibilitychange', () => { keepAwake(); if (document.visibilityState === 'visible') send(); });
+document.addEventListener('visibilitychange', () => {
+  keepAwake();
+  if (document.visibilityState === 'visible') { send(); loadSessions(); }
+});
 window.addEventListener('online', send);
 
 loadLocal();
@@ -411,6 +432,7 @@ render();
 requestAnimationFrame(tick);
 keepAwake();
 send();
+loadSessions();
 </script>
 </body>
 </html>
