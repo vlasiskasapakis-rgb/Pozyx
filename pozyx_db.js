@@ -30,7 +30,24 @@ window.pozyxDb = {
       try { const j = await res.json(); if (j.message) msg = j.message; } catch (e) {}
       throw new Error(msg);
     }
-    return method === 'GET' ? res.json() : null;
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  },
+
+  // How far this device's clock is from the database server's clock, in ms to ADD to Date.now().
+  // Asks the server for its time a few times and keeps the fastest answer (least network delay).
+  async measureClock(rounds = 8) {
+    let best = null;
+    for (let i = 0; i < rounds; i++) {
+      const sent = Date.now(), p0 = performance.now();
+      const server = +(await this.request('rpc/server_time_ms', { method: 'POST', body: {} }));
+      const rtt = performance.now() - p0;
+      const offset = server - (sent + rtt / 2);
+      if (Number.isFinite(offset) && (!best || rtt < best.rtt)) best = { offset, rtt };
+    }
+    if (!best) throw new Error('no answer from the server clock');
+    best.at = Date.now();
+    return best;   // {offset, rtt, at}; accurate to about rtt / 2
   },
 
   // Insert rows, or update them if a row with the same key is already there (safe to retry).

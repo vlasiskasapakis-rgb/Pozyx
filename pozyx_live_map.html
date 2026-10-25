@@ -96,6 +96,7 @@
   <label><input type="checkbox" id="chkSmooth" checked> Smoothing</label>
   <label><input type="checkbox" id="chkTrail" checked> Trails</label>
   <div id="status" class="status">Not connected. Close the Arduino IDE Serial Monitor first, then click Connect (Chrome or Edge).</div>
+  <div id="clockInfo" class="status" hidden></div>
 </header>
 
 <main>
@@ -116,6 +117,8 @@
         <option value="2">2×</option>
         <option value="4">4×</option>
       </select>
+      <label id="tapShiftWrap" hidden title="Moves all phone taps later (+) or earlier (−), for recordings made before clock sync">Tap shift
+        <input type="number" id="tapShift" step="0.1" value="0" style="width:72px; font:inherit; font-size:14px; padding:6px; border-radius:8px; border:1px solid var(--border); background:var(--panel); color:var(--text)"> s</label>
       <span id="replayName" class="rname"></span>
       <button id="btnExitReplay">Exit replay</button>
     </div>
@@ -350,9 +353,11 @@ function buildRecording() {
     rec.unsynced++;
     return s.at;
   };
-  const start = rec.startedAt.getTime();
+  // Times are corrected to the database server clock (see syncClock), like the phone taps
+  const off = clockFix ? Math.round(clockFix.offset) : 0;
+  const start = rec.startedAt.getTime() + off;
   const samples = rec.samples.map(s => {
-    const unix = realTime(s);
+    const unix = realTime(s) + off;
     return { t: r3(Math.max(0, (unix - start) / 1000)), unix_ms: unix, time: isoLocal(unix), id: s.id, x: mm2m(s.x), y: mm2m(s.y), z: mm2m(s.z) };
   });
   const dur = samples.length ? Math.max(...samples.map(s => s.t)) : 0;
@@ -365,6 +370,7 @@ function buildRecording() {
     session: rec.sessionId || null,
     startedAt: isoLocal(start),
     startedAtUnixMs: start,
+    clockOffsetMs: clockFix ? off : null,
     duration: r3(dur),
     anchors: [...rec.anchors].map(([id, a]) => ({ id, x: mm2m(a.x), y: mm2m(a.y), z: mm2m(a.z) })),
     samples,
@@ -401,7 +407,7 @@ async function uploadRecording() {
   const all = [...rows.values()];
   try {
     setStatus(`Uploading ${all.length} positions to the database…`);
-    await pozyxDb.upsert('recordings', [{ id, session_id: rec.sessionId || null, started_at_unix_ms: d.startedAtUnixMs, duration_s: d.duration }], 'id');
+    await pozyxDb.upsert('recordings', [{ id, session_id: rec.sessionId || null, started_at_unix_ms: d.startedAtUnixMs, duration_s: d.duration, clock_offset_ms: d.clockOffsetMs }], 'id');
     if (d.anchors.length) {
       await pozyxDb.upsert('anchors', d.anchors.map(a => ({ recording_id: id, anchor_id: a.id, x: a.x, y: a.y, z: a.z })), 'recording_id,anchor_id');
     }
@@ -444,6 +450,28 @@ function saveCsv() {
   for (const a of d.anchors) lines.push(`0,anchor,${a.id},${a.x},${a.y},${a.z},,`);
   for (const s of d.samples) lines.push(`${s.t},tag,${s.id},${s.x},${s.y},${s.z},${s.unix_ms},${s.time}`);
   download(fileStamp(rec.startedAt) + '.csv', lines.join('\n') + '\n', 'text/csv');
+}
+
+/* ---------- shared clock ---------- */
+// Phone and laptop clocks can differ by seconds. Both pages measure their clock against the
+// database server and save times corrected to it.
+let clockFix = null;   // {offset, rtt, at}: this computer's clock vs the database server clock
+async function syncClock() {
+  if (!hasDb()) return;
+  const el = $('clockInfo');
+  el.hidden = false;
+  try {
+    clockFix = await pozyxDb.measureClock();
+    const o = clockFix.offset / 1000;
+    el.classList.remove('err');
+    el.textContent = `Synced to the server clock: this computer is ${Math.abs(o).toFixed(3)} s ${o > 0 ? 'behind' : 'ahead'} ` +
+      `(±${(clockFix.rtt / 2000).toFixed(3)} s). Recordings are saved corrected.`;
+  } catch (e) {
+    el.classList.add('err');
+    el.textContent = /server_time_ms/.test(e.message)
+      ? 'Clock sync is off: run the updated supabase/schema.sql in Supabase, then reload this page.'
+      : `Clock sync failed (${e.message}). Recordings use this computer's clock.`;
+  }
 }
 
 /* ---------- sessions ---------- */
@@ -539,6 +567,7 @@ function startReplay(data, name) {
   $('replayBar').hidden = false;
   $('replayName').textContent = name;
   $('seek').max = Math.max(1, Math.round(data.duration * 1000));
+  $('tapShift').value = 0;
   prepareTaps(data);
   $('btnRec').disabled = true;
   $('btnDemo').disabled = true;
@@ -625,6 +654,9 @@ let seeking = false;
 // For each tap: where every tag was at that moment (nearest position within 1 s).
 function prepareTaps(data) {
   const taps = data.taps || [];
+  const shift = +$('tapShift').value || 0;   // manual correction for older recordings
+  for (const tp of taps) { if (tp.t0 === undefined) tp.t0 = tp.t; tp.t = tp.t0 + shift; }
+  $('tapShiftWrap').hidden = !data.taps;
   const byTag = new Map();
   for (const q of data.samples) { if (!byTag.has(q.id)) byTag.set(q.id, []); byTag.get(q.id).push(q); }
   for (const tp of taps) {
@@ -1175,6 +1207,12 @@ $('btnSaveJson').onclick = saveJson;
 $('btnSaveCsv').onclick = saveCsv;
 $('btnUpload').onclick = uploadRecording;
 $('btnNewSession').onclick = newSession;
+$('tapShift').addEventListener('input', () => {
+  if (!replay.active || !replay.data.taps) return;
+  prepareTaps(replay.data);
+  replay.lastT = replay.t;
+  scheduleDraw();
+});
 $('btnOpenDb').onclick = openDbDialog;
 $('btnDbClose').onclick = () => $('dbDialog').close();
 $('dbSession').onchange = loadRecList;
@@ -1208,6 +1246,8 @@ $('btnExitReplay').onclick = exitReplay;
 updateRecUI();
 renderSessions();
 loadSessions();
+syncClock();
+setInterval(() => { if (!rec.on) syncClock(); }, 5 * 60 * 1000);
 
 setView('3d');
 </script>

@@ -115,9 +115,10 @@
 <body>
 <div class="app">
   <header class="top">
-    <div class="brand"><h1>Sync Marker</h1><span class="sub">this phone's clock</span></div>
+    <div class="brand"><h1>Sync Marker</h1><span class="sub" id="clkSrc">this phone's clock</span></div>
     <div class="clock" aria-hidden="true"><span id="clk">--:--:--</span><span id="clkMs" class="ms">.---</span></div>
     <div class="unix">unix ms <span id="clkUnix">–</span></div>
+    <div class="unix" id="clkInfo"></div>
   </header>
 
   <div class="row">
@@ -166,6 +167,8 @@ const localNames = new Map(); // names of sessions that only exist on this phone
 let current = '';             // selected session id, '' = no session
 let outbox = [];              // database changes not sent yet: {op: 'add', row} or {op: 'delete', id}
 let sending = false, retrying = false, retryTimer = null, dbProblem = '';
+let clockFix = null;          // {offset, rtt, at}: this phone's clock vs the database server clock
+let clockProblem = '';
 const hasDb = () => !!(window.pozyxDb && pozyxDb.configured());
 
 /* ---------- time formatting ---------- */
@@ -204,13 +207,14 @@ function loadLocal() {
     if (Array.isArray(s.dbSessions)) dbSessions = s.dbSessions;
     if (Array.isArray(s.outbox)) outbox = s.outbox;
     if (typeof s.current === 'string') current = s.current;
+    if (s.clockFix && Number.isFinite(s.clockFix.offset)) clockFix = s.clockFix;
     if (typeof s.label === 'string') $('label').value = s.label;
   } catch (e) {}
 }
 function saveLocal() {
   try {
     localStorage.setItem(KEY, JSON.stringify({
-      taps: Object.fromEntries(taps), localNames: Object.fromEntries(localNames), dbSessions, outbox, current, label: $('label').value,
+      taps: Object.fromEntries(taps), localNames: Object.fromEntries(localNames), dbSessions, outbox, current, label: $('label').value, clockFix,
     }));
   } catch (e) {}
 }
@@ -219,15 +223,17 @@ function saveLocal() {
 function onTap(e) {
   // Use the time of the touch itself (the event's own timestamp), not when this code runs.
   const age = performance.now() - e.timeStamp;
-  const unix = Math.round(Date.now() - (age >= 0 && age < 1000 ? age : 0));
+  // Corrected to the database server clock, so it lines up with the laptop (see syncClock)
+  const off = clockFix ? Math.round(clockFix.offset) : null;
+  const unix = Math.round(Date.now() - (age >= 0 && age < 1000 ? age : 0)) + (off || 0);
   if (!taps.has(current)) taps.set(current, []);
-  const tap = { id: newId(), unix_ms: unix, label: $('label').value.trim() };
+  const tap = { id: newId(), unix_ms: unix, label: $('label').value.trim(), off };
   taps.get(current).push(tap);
   try { navigator.vibrate && navigator.vibrate(20); } catch (err) {}
   const b = $('tap');
   b.classList.remove('hit'); void b.offsetWidth; b.classList.add('hit');
   keepAwake();
-  queue({ op: 'add', row: { id: tap.id, session_id: current || null, session_name: current ? nameOf(current) : null, unix_ms: tap.unix_ms, label: tap.label } });
+  queue({ op: 'add', row: { id: tap.id, session_id: current || null, session_name: current ? nameOf(current) : null, unix_ms: tap.unix_ms, label: tap.label, clock_offset_ms: off } });
 }
 function queue(change) {
   if (hasDb()) outbox.push(change);
@@ -267,6 +273,37 @@ async function send() {
   }
   sending = false;
   renderStatus();
+}
+
+/* ---------- shared clock ---------- */
+// Phone and laptop clocks can differ by seconds. Both pages measure their clock against the
+// database server and save times corrected to it.
+async function syncClock() {
+  if (!hasDb()) return;
+  try {
+    clockFix = await pozyxDb.measureClock();
+    clockProblem = '';
+    saveLocal();
+  } catch (e) {
+    clockProblem = /server_time_ms/.test(e.message)
+      ? 'Run the updated supabase/schema.sql in Supabase to turn on clock sync.'
+      : `Clock sync failed (${e.message}).`;
+  }
+  renderClockInfo();
+}
+function renderClockInfo() {
+  const el = $('clkInfo');
+  if (!hasDb()) { el.textContent = ''; return; }
+  if (clockFix) {
+    const o = clockFix.offset / 1000;
+    const dir = Math.abs(o) < 0.0005 ? 'matches the server' : `is ${Math.abs(o).toFixed(3)} s ${o > 0 ? 'behind' : 'ahead'}`;
+    el.textContent = `Synced to server clock: this phone ${dir} (±${(clockFix.rtt / 2000).toFixed(3)} s), corrected.` +
+      (clockProblem ? ' ' + clockProblem : '');
+    $('clkSrc').textContent = 'server clock';
+  } else {
+    el.textContent = clockProblem || 'Syncing with the server clock…';
+    $('clkSrc').textContent = "this phone's clock";
+  }
 }
 
 /* ---------- sessions ---------- */
@@ -358,7 +395,7 @@ function csvFor(id) {
 
 /* ---------- clock and screen ---------- */
 function tick() {
-  const now = Date.now(), d = new Date(now);
+  const now = Date.now() + (clockFix ? Math.round(clockFix.offset) : 0), d = new Date(now);
   $('clk').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   $('clkMs').textContent = '.' + pad(d.getMilliseconds(), 3);
   $('clkUnix').textContent = now;
@@ -431,7 +468,7 @@ $('btnSave').onclick = () => {
 
 document.addEventListener('visibilitychange', () => {
   keepAwake();
-  if (document.visibilityState === 'visible') { send(); loadSessions(); }
+  if (document.visibilityState === 'visible') { send(); loadSessions(); syncClock(); }
 });
 window.addEventListener('online', send);
 window.addEventListener('pagehide', send);   // last chance to upload before the page closes
@@ -442,6 +479,9 @@ requestAnimationFrame(tick);
 keepAwake();
 send();
 loadSessions();
+renderClockInfo();
+syncClock();
+setInterval(syncClock, 5 * 60 * 1000);
 </script>
 </body>
 </html>

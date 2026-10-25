@@ -101,3 +101,11 @@ create policy "pages read"   on taps for select to anon using (true);
 create policy "pages add"    on taps for insert to anon with check (true);
 create policy "pages update" on taps for update to anon using (true) with check (true);
 create policy "pages undo"   on taps for delete to anon using (true);  -- the Undo button
+
+-- Shared clock: both pages measure how far their own clock is from this server's clock
+-- and save every time corrected to it, so phone and laptop line up even if their clocks differ.
+create or replace function server_time_ms() returns double precision
+  language sql volatile as $$ select extract(epoch from clock_timestamp()) * 1000 $$;
+grant execute on function server_time_ms() to anon;
+alter table taps       add column if not exists clock_offset_ms double precision;  -- correction applied (ms)
+alter table recordings add column if not exists clock_offset_ms double precision;

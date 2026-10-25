@@ -90,6 +90,14 @@ Tables: `sessions`, `recordings`, `anchors`, `positions`, `taps`. Taps and
 recordings carry the `session_id`; positions belong to a recording. See
 `supabase/sync_examples.sql` for queries that line taps up with positions.
 
+### Shared clock
+
+Phone and laptop clocks can differ by seconds. Both pages measure their own
+clock against the Supabase server (function `server_time_ms` in the schema)
+and save every time corrected to it, so taps and positions line up. Each page
+shows the measured difference. For recordings made before this, use
+**Tap shift** in the replay to move the taps by hand.
+
 ## Syncing tips
 
 - Both files use the same `unix_ms`, so rows can be matched directly.
