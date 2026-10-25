@@ -6,7 +6,7 @@
 // This key is meant to be public. Never put the secret / service_role key here.
 // Leave them empty to run both pages without a database.
 window.POZYX_DB = {
-  url: '',
+  url: 'https://aawyndzgltaqrhcdwqfi.supabase.co',
   key: '',
 };
 
