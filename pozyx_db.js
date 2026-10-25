@@ -16,13 +16,14 @@ window.pozyxDb = {
     return !!(c && c.url && c.key);
   },
 
-  async request(path, { method = 'GET', body, prefer } = {}) {
+  // keepalive lets a small upload finish even if the page is closed right after (max 64 KB)
+  async request(path, { method = 'GET', body, prefer, keepalive = false } = {}) {
     const c = window.POZYX_DB;
     const headers = { apikey: c.key, 'Content-Type': 'application/json' };
     if (c.key.startsWith('eyJ')) headers.Authorization = 'Bearer ' + c.key;   // older anon keys
     if (prefer) headers.Prefer = prefer;
     const res = await fetch(c.url.replace(/\/+$/, '') + '/rest/v1/' + path, {
-      method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+      method, headers, keepalive, body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
       let msg = `${res.status} ${res.statusText}`;
@@ -33,9 +34,9 @@ window.pozyxDb = {
   },
 
   // Insert rows, or update them if a row with the same key is already there (safe to retry).
-  upsert(table, rows, onConflict) {
+  upsert(table, rows, onConflict, { keepalive = false } = {}) {
     return this.request(`${table}?on_conflict=${onConflict}`, {
-      method: 'POST', body: rows, prefer: 'resolution=merge-duplicates,return=minimal',
+      method: 'POST', body: rows, prefer: 'resolution=merge-duplicates,return=minimal', keepalive,
     });
   },
 

@@ -248,7 +248,7 @@ async function send() {
         // send every tap waiting in a row at once
         const adds = [];
         while (adds.length < outbox.length && outbox[adds.length].op === 'add') adds.push(outbox[adds.length].row);
-        await pozyxDb.upsert('taps', adds, 'id');
+        await pozyxDb.upsert('taps', adds, 'id', { keepalive: adds.length <= 100 });
         outbox.splice(0, adds.length);
       } else {
         await pozyxDb.remove('taps', 'id', c.id);
@@ -277,10 +277,18 @@ function nameOf(id) {
 async function loadSessions(manual) {
   if (!hasDb()) return;
   try {
+    const before = new Set(dbSessions.map(x => x.id));
     dbSessions = await pozyxDb.request('sessions?select=id,name,created_at_unix_ms&order=created_at_unix_ms.desc&limit=100');
+    // Refresh switches to a session that was just created on the laptop
+    const fresh = dbSessions.find(x => !before.has(x.id)) || (!current && dbSessions[0]);
+    if (manual && fresh) current = fresh.id;
     saveLocal();
     render();
-    if (manual) showMsg(dbSessions.length ? `${dbSessions.length} session${dbSessions.length === 1 ? '' : 's'} loaded.` : 'No sessions yet. Create one in the Pozyx live map on the laptop.');
+    if (manual) {
+      showMsg(fresh ? `Now saving taps to the session "${fresh.name}".`
+        : dbSessions.length ? `Sessions up to date. Taps go to "${current ? nameOf(current) : 'No session'}".`
+        : 'No sessions yet. Create one in the Pozyx live map on the laptop.');
+    }
   } catch (e) {
     if (manual) showMsg(`Could not load sessions: ${e.message}`);
   }
@@ -426,6 +434,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { send(); loadSessions(); }
 });
 window.addEventListener('online', send);
+window.addEventListener('pagehide', send);   // last chance to upload before the page closes
 
 loadLocal();
 render();

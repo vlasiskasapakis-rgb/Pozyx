@@ -59,6 +59,8 @@
   .tapflash { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: var(--tap); color: var(--panel); padding: 6px 14px; border-radius: 999px; font-size: 14px; font-weight: 600; pointer-events: none; white-space: nowrap; }
   #tapsTable tr { cursor: pointer; }
   #tapsTable tr.past td { color: var(--muted); }
+  #tapsTable tr.outside { cursor: default; opacity: .5; }
+  #tapsTable td.note { color: var(--tap); font-size: 12px; white-space: normal; }
   #tapsTable tr:hover td { background: var(--grid); }
   .tapdot { display: inline-block; width: 9px; height: 9px; transform: rotate(45deg); background: var(--tap); margin-right: 8px; vertical-align: middle; }
   dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); padding: 16px; width: min(560px, calc(100vw - 32px)); }
@@ -540,8 +542,11 @@ function startReplay(data, name) {
   prepareTaps(data);
   $('btnRec').disabled = true;
   $('btnDemo').disabled = true;
-  const nt = (data.taps || []).length;
-  setStatus(`Replaying "${name}" (${data.samples.length} positions, ${data.duration.toFixed(1)} s${data.taps ? `, ${nt} phone tap${nt === 1 ? '' : 's'}` : ''}). Live data is paused.`);
+  const tps = data.taps || [], nt = tps.filter(tp => !tp.outside).length;
+  const nOther = tps.filter(tp => !tp.outside && tp.other).length, nOut = tps.length - nt;
+  const tapInfo = !data.taps ? '' : `, ${nt} phone tap${nt === 1 ? '' : 's'}` +
+    (nOther ? `, ${nOther} of them saved under another session` : '') + (nOut ? `; ${nOut} more just before or after` : '');
+  setStatus(`Replaying "${name}" (${data.samples.length} positions, ${data.duration.toFixed(1)} s${tapInfo}). Live data is paused.`);
   seekTo(0);
   replay.playing = true;
   replay.lastFrame = performance.now();
@@ -558,7 +563,7 @@ function replayTick(now) {
       replay.playing = false;
     }
     advanceTo(replay.t);
-    for (const tp of replay.data.taps || []) if (tp.t > replay.lastT && tp.t <= replay.t) flashTap(tp);
+    for (const tp of replay.data.taps || []) if (!tp.outside && tp.t > replay.lastT && tp.t <= replay.t) flashTap(tp);
   }
   replay.lastT = replay.t;
   replay.lastFrame = now;
@@ -594,7 +599,7 @@ function updateReplayUI() {
   if (!seeking) $('seek').value = Math.round(replay.t * 1000);
   const clock = replay.data.startUnix ? clockTime(replay.data.startUnix + replay.t * 1000) + ' · ' : '';
   $('replayTime').textContent = `${clock}${replay.t.toFixed(1)} / ${replay.data.duration.toFixed(1)} s`;
-  const passed = (replay.data.taps || []).filter(tp => tp.t <= replay.t).length;
+  const passed = (replay.data.taps || []).filter(tp => !tp.outside && tp.t <= replay.t).length;
   if (passed !== replay.tapsPassed) { replay.tapsPassed = passed; renderTapTable(); }
 }
 
@@ -623,7 +628,10 @@ function prepareTaps(data) {
   const byTag = new Map();
   for (const q of data.samples) { if (!byTag.has(q.id)) byTag.set(q.id, []); byTag.get(q.id).push(q); }
   for (const tp of taps) {
+    // Stop is pressed a moment after the last position, so allow 2 s at the end
+    tp.outside = tp.t < 0 ? 'before Record' : tp.t > data.duration + 2 ? 'after Stop' : null;
     tp.marks = [];
+    if (tp.outside) continue;
     for (const list of byTag.values()) {
       let lo = 0, hi = list.length - 1;
       while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid].t < tp.t) lo = mid + 1; else hi = mid; }
@@ -633,7 +641,7 @@ function prepareTaps(data) {
     }
   }
   const dur = Math.max(data.duration, 0.001);
-  $('tapMarks').innerHTML = taps.map((tp, i) =>
+  $('tapMarks').innerHTML = taps.map((tp, i) => tp.outside ? '' :
     `<button style="left:${(Math.max(0, Math.min(1, tp.t / dur)) * 100).toFixed(3)}%" data-i="${i}" title="${esc(tapText(tp))}" aria-label="Jump to tap ${i + 1}"></button>`).join('');
   $('tapsCard').hidden = !data.taps;
   replay.tapsPassed = -1;
@@ -643,16 +651,19 @@ function tapText(tp) { return `${tp.label ? tp.label + ' · ' : ''}${clockTime(t
 function renderTapTable() {
   const taps = (replay.data && replay.data.taps) || [];
   if (!taps.length) { $('tapsTable').innerHTML = '<div class="empty">No phone taps during this recording.</div>'; return; }
-  let h = '<table><tr><th>#</th><th>Time</th><th>t (s)</th><th>Label</th></tr>';
+  let h = '<table><tr><th>#</th><th>Time</th><th>t (s)</th><th>Label</th><th>Note</th></tr>';
   taps.forEach((tp, i) => {
-    h += `<tr data-i="${i}"${tp.t <= replay.t ? ' class="past"' : ''}><td><span class="tapdot"></span>${i + 1}</td>` +
-      `<td class="num">${clockTime(tp.unix_ms)}</td><td class="num">${tp.t.toFixed(2)}</td><td>${esc(tp.label || '')}</td></tr>`;
+    const note = tp.outside || (tp.other ? `session: ${tp.other}` : '');
+    const attrs = tp.outside ? ' class="outside"' : ` data-i="${i}"${tp.t <= replay.t ? ' class="past"' : ''}`;
+    h += `<tr${attrs}><td><span class="tapdot"></span>${i + 1}</td>` +
+      `<td class="num">${clockTime(tp.unix_ms)}</td><td class="num">${tp.t.toFixed(2)}</td><td>${esc(tp.label || '')}</td>` +
+      `<td class="note">${esc(note)}</td></tr>`;
   });
   $('tapsTable').innerHTML = h + '</table>';
 }
 function jumpToTap(i) {
   const tp = replay.data.taps[i];
-  if (!tp) return;
+  if (!tp || tp.outside) return;
   replay.playing = false;
   seekTo(tp.t);
   updateReplayUI();
@@ -670,7 +681,7 @@ function flashTap(tp) {
 function tapMarksToDraw() {
   if (!replay.active || !replay.data.taps) return [];
   const out = [];
-  for (const tp of replay.data.taps) if (tp.t <= replay.t) for (const m of tp.marks) out.push({ ...m, label: tp.label });
+  for (const tp of replay.data.taps) if (!tp.outside && tp.t <= replay.t) for (const m of tp.marks) out.push({ ...m, label: tp.label });
   return out;
 }
 
@@ -720,7 +731,8 @@ async function replayFromDb(r) {
       if (page.length < 1000) break;
       setStatus(`Loading the recording from the database… ${pos.length} positions`);
     }
-    const tapRows = await pozyxDb.request(`taps?select=unix_ms,label&${sessionFilter(sid)}&unix_ms=gte.${start}&unix_ms=lte.${Math.ceil(end)}&order=unix_ms.asc`);
+    // every tap from 1 minute before to 1 minute after, whatever session the phone had picked
+    const tapRows = await pozyxDb.request(`taps?select=unix_ms,label,session_id,session_name&unix_ms=gte.${start - 60000}&unix_ms=lte.${Math.ceil(end) + 60000}&order=unix_ms.asc`);
     const samples = pos.map(q => ({ t: (+q.unix_ms - start) / 1000, id: String(q.tag).toUpperCase(), x: +q.x, y: +q.y, z: +q.z }))
       .filter(q => [q.t, q.x, q.y, q.z].every(Number.isFinite)).sort((a, b) => a.t - b.t);
     if (!samples.length) throw new Error('this recording has no positions');
@@ -729,7 +741,10 @@ async function replayFromDb(r) {
       samples,
       duration: Math.max(+r.duration_s || 0, samples[samples.length - 1].t),
       startUnix: start,
-      taps: tapRows.map(tp => ({ t: (+tp.unix_ms - start) / 1000, unix_ms: +tp.unix_ms, label: tp.label || '' })),
+      taps: tapRows.map(tp => ({
+        t: (+tp.unix_ms - start) / 1000, unix_ms: +tp.unix_ms, label: tp.label || '',
+        other: (tp.session_id || '') === sid ? null : (tp.session_name || 'No session'),
+      })),
     };
     startReplay(data, `${sesName} · ${clockTime(start).slice(0, 8)}`);
   } catch (e) {
