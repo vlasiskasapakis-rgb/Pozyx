@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sync Marker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Martian+Mono:wght@400;500&display=swap">
+<style>
+  [hidden] { display: none !important; }
+  body { margin: 0; }
+  /* Phone tool, one column: live clock on top, a wide tap pad, the tap log underneath.
+     Palette borrowed from the Pozyx live map so the two tools feel like one kit. */
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --text: #1f1e1b; --muted: #6b6a64; --border: #dedcd4;
+    --accent: #0f6e56; --accent-press: #0a5240; --accent-text: #ffffff; --ring: #1d9e75;
+    --ok: #1d9e75; --wait: #b7791f; --danger: #a32d2d;
+    --font-ui: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-num: "Martian Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1b1b19; --panel: #242422; --text: #ecebe6; --muted: #a3a29b; --border: #3a3936;
+      --accent: #5dcaa5; --accent-press: #47b38e; --accent-text: #04342c; --ring: #9fe3cb;
+      --ok: #5dcaa5; --wait: #e9b45a; --danger: #f09595;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1b1b19; --panel: #242422; --text: #ecebe6; --muted: #a3a29b; --border: #3a3936;
+    --accent: #5dcaa5; --accent-press: #47b38e; --accent-text: #04342c; --ring: #9fe3cb;
+    --ok: #5dcaa5; --wait: #e9b45a; --danger: #f09595;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: 15px; line-height: 1.45; }
+
+  .app {
+    max-width: 560px; min-height: 100%; margin: 0 auto;
+    display: flex; flex-direction: column; gap: 14px;
+    padding-block: 14px 28px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+
+  .top { display: grid; gap: 2px; }
+  .brand { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  h1 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .brand .sub { font-size: 12px; color: var(--muted); }
+  .clock { font-family: var(--font-num); font-size: 34px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1.15; }
+  .clock .ms { font-size: 22px; color: var(--muted); }
+  .unix { font-family: var(--font-num); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .row { display: flex; gap: 8px; align-items: stretch; }
+  .row select { flex: 1; min-width: 0; }
+  .field { display: grid; gap: 4px; }
+  .field label { font-size: 13px; color: var(--muted); }
+  .opt { font-size: 12px; opacity: 0.8; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  select, input[type=text], textarea, .ghost {
+    font: inherit; font-size: 15px; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px;
+  }
+  textarea { font-family: var(--font-num); font-size: 12px; width: 100%; min-height: 120px; resize: vertical; }
+  .ghost { cursor: pointer; white-space: nowrap; }
+  .ghost:hover { border-color: var(--muted); }
+  .ghost:disabled { opacity: 0.45; cursor: default; }
+  select:focus-visible, input:focus-visible, textarea:focus-visible, .ghost:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+  .tap {
+    position: relative; overflow: hidden; width: 100%; min-height: max(220px, 38vh);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    border: 0; border-radius: 28px; background: var(--accent); color: var(--accent-text); cursor: pointer;
+    touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    transition: transform 80ms ease-out;
+  }
+  .tap:active { background: var(--accent-press); transform: scale(0.985); }
+  .tap:focus-visible { outline: 3px solid var(--ring); outline-offset: 3px; }
+  .tap-word { font-family: var(--font-num); font-size: 44px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; }
+  .tap-last { font-family: var(--font-num); font-size: 14px; opacity: 0.85; font-variant-numeric: tabular-nums; }
+  .tap::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--accent-text); opacity: 0; pointer-events: none; }
+  .tap.hit::after { animation: hit 280ms ease-out; }
+  @keyframes hit { from { opacity: 0.4; } to { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .tap, .tap:active { transition: none; transform: none; } }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .actions .ghost { flex: 1 1 auto; }
+  .status { margin: 0; font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: baseline; }
+  .status::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transform: translateY(-1px); }
+  .status.ok::before { background: var(--ok); }
+  .status.wait::before { background: var(--wait); }
+  .status.bad { color: var(--danger); }
+  .status.bad::before { background: var(--danger); }
+  .msg { margin: 0; font-size: 13px; color: var(--text); min-height: 1.45em; }
+
+  .log h2 { margin: 6px 0 2px; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .empty { color: var(--muted); font-size: 14px; padding: 10px 0; max-width: 60ch; }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: grid; grid-template-columns: 3.2ch minmax(0, 1fr) auto; column-gap: 10px; row-gap: 1px;
+    padding: 9px 0; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums;
+  }
+  li .n { grid-row: span 2; font-family: var(--font-num); font-size: 12px; color: var(--muted); padding-top: 3px; }
+  li .time { font-family: var(--font-num); font-size: 15px; }
+  li .delta { font-family: var(--font-num); font-size: 12px; color: var(--muted); text-align: right; padding-top: 3px; }
+  li .unix { font-family: var(--font-num); font-size: 12px; color: var(--muted); }
+  li .lbl { font-size: 13px; color: var(--accent); text-align: right; overflow-wrap: anywhere; }
+  .note { margin: 4px 0 0; font-size: 13px; color: var(--muted); max-width: 60ch; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><h1>Sync Marker</h1><span class="sub">this phone's clock</span></div>
+    <div class="clock" aria-hidden="true"><span id="clk">--:--:--</span><span id="clkMs" class="ms">.---</span></div>
+    <div class="unix">unix ms <span id="clkUnix">–</span></div>
+  </header>
+
+  <div class="row">
+    <label for="session" class="sr">Session</label>
+    <select id="session"></select>
+    <button id="btnNew" class="ghost" type="button">New session</button>
+  </div>
+
+  <div class="field">
+    <label for="label">Label for the next taps <span class="opt">(optional)</span></label>
+    <input id="label" type="text" placeholder="e.g. start, jump, stop" autocomplete="off" enterkeyhint="done">
+  </div>
+
+  <button id="tap" class="tap" type="button">
+    <span class="tap-word">Tap</span>
+    <span class="tap-last" id="tapLast">Logs the moment you touch it</span>
+  </button>
+
+  <div class="actions">
+    <button id="btnUndo" class="ghost" type="button">Undo last</button>
+    <button id="btnSave" class="ghost" type="button" hidden>Save CSV</button>
+    <button id="btnCopy" class="ghost" type="button">Copy CSV</button>
+  </div>
+  <p id="status" class="status">Connecting to your claude.ai account…</p>
+  <p id="msg" class="msg" aria-live="polite"></p>
+  <textarea id="csvOut" readonly hidden aria-label="CSV of this session"></textarea>
+
+  <section class="log">
+    <h2>Taps <span id="count"></span></h2>
+    <div id="empty" class="empty">No taps in this session yet. Press Tap at the moment something happens, for example when you start a Pozyx recording or the tag hits the floor.</div>
+    <ol id="list"></ol>
+  </section>
+
+  <p class="note">Times come from this phone's clock. Keep "Set time automatically" turned on here and on the laptop, so both clocks agree.</p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const KEY = 'syncmarker.v1';
+
+const sessions = new Map();   // id -> {id, name, created, taps: [{unix_ms, label}]}
+let current = null;           // selected session; null = a new one starts on the next tap
+const pending = new Set();    // sessions changed on this phone and not yet saved to the account
+const writing = new Set();
+let db = null, dbState = 'connecting', dbProblem = '', retrying = false, retryTimer = null;
+let downloads = null;
+
+/* ---------- time formatting ---------- */
+const pad = (n, w = 2) => String(n).padStart(w, '0');
+function hms(ms) {
+  const d = new Date(ms);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+// Local date and time with the UTC offset, e.g. 2026-10-25T16:03:22.517+02:00 (same as the Pozyx files)
+function isoLocal(ms) {
+  const d = new Date(ms), tz = -d.getTimezoneOffset();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${hms(ms)}` +
+    `${tz >= 0 ? '+' : '-'}${pad(Math.floor(Math.abs(tz) / 60))}:${pad(Math.abs(tz) % 60)}`;
+}
+function fileStamp(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+}
+function sessionName(ms) {
+  return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+/* ---------- copy on this phone ---------- */
+function loadLocal() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (!s) return;
+    for (const x of s.sessions || []) sessions.set(x.id, x);
+    for (const id of s.unsynced || []) if (sessions.has(id)) pending.add(id);
+    if (s.current && sessions.has(s.current)) current = s.current;
+    if (typeof s.label === 'string') $('label').value = s.label;
+  } catch (e) {}
+}
+function saveLocal() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify({
+      sessions: [...sessions.values()], unsynced: [...pending, ...writing], current, label: $('label').value,
+    }));
+  } catch (e) {}
+}
+
+/* ---------- tapping ---------- */
+function onTap(e) {
+  // Use the time of the touch itself (the event's own timestamp), not when this code runs.
+  const age = performance.now() - e.timeStamp;
+  const unix = Math.round(Date.now() - (age >= 0 && age < 1000 ? age : 0));
+  if (!current || !sessions.has(current)) {
+    current = 's-' + unix;
+    sessions.set(current, { id: current, name: sessionName(unix), created: unix, taps: [] });
+  }
+  sessions.get(current).taps.push({ unix_ms: unix, label: $('label').value.trim() });
+  try { navigator.vibrate && navigator.vibrate(20); } catch (err) {}
+  const b = $('tap');
+  b.classList.remove('hit'); void b.offsetWidth; b.classList.add('hit');
+  keepAwake();
+  changed(current);
+}
+function changed(id) {
+  pending.add(id);
+  saveLocal();
+  render();
+  flush(id);
+}
+
+/* ---------- saving to the account ---------- */
+async function flush(id) {
+  if (!db || dbState !== 'ready' || writing.has(id) || !pending.has(id)) return;
+  const s = sessions.get(id);
+  writing.add(id);
+  pending.delete(id);
+  let ok = false;
+  try {
+    await db.collection('sessions').doc(id).set({
+      name: s.name, created: s.created, taps: s.taps.map(t => ({ unix_ms: t.unix_ms, label: t.label })),
+    });
+    ok = true;
+    retrying = false;
+  } catch (e) {
+    pending.add(id);
+    const code = e && e.code;
+    if (code === 'quota_exceeded') {
+      dbState = 'stopped';
+      dbProblem = 'Account storage for this page is full. New taps stay on this phone; save them as CSV.';
+    } else if (['revoked', 'not_granted', 'capability_disabled', 'capability_removed', 'invalid_argument', 'transform_error'].includes(code)) {
+      dbState = 'stopped';
+      dbProblem = 'Taps cannot be saved to your account here, so they stay on this phone. Save them as CSV to keep them.';
+    } else {
+      retrying = true;
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(flushAll, 3000 + Math.random() * 3000);
+    }
+  } finally {
+    writing.delete(id);
+  }
+  saveLocal();
+  renderStatus();
+  if (ok && pending.has(id)) flush(id);   // more taps came in while saving
+}
+function flushAll() { for (const id of [...pending]) flush(id); }
+
+async function initDb() {
+  try { db = window.claude && window.claude.use ? await window.claude.use('db') : null; } catch (e) { db = null; }
+  if (!db) { dbState = 'none'; renderStatus(); return; }
+  dbState = 'ready';
+  db.collection('sessions').orderBy('created', 'desc').limit(500).onSnapshot((snap) => {
+    for (const d of snap.docs) {
+      if (pending.has(d.id) || writing.has(d.id)) continue;   // the copy on this phone is newer
+      const b = d.data() || {};
+      const taps = Array.isArray(b.taps) ? b.taps : [];
+      sessions.set(d.id, {
+        id: d.id, name: String(b.name || d.id), created: +b.created || 0,
+        taps: taps.filter(t => t && Number.isFinite(+t.unix_ms)).map(t => ({ unix_ms: +t.unix_ms, label: String(t.label || '') })),
+      });
+    }
+    saveLocal();
+    render();
+  }, (e) => {
+    if (e && e.code === 'revoked') {
+      dbState = 'stopped';
+      dbProblem = 'Taps cannot be saved to your account here, so they stay on this phone. Save them as CSV to keep them.';
+      renderStatus();
+    }
+  });
+  flushAll();
+  renderStatus();
+}
+
+/* ---------- drawing ---------- */
+function render() {
+  const sel = $('session');
+  const all = [...sessions.values()].sort((a, b) => b.created - a.created);
+  let opts = current ? '' : '<option value="">New session · starts on the next tap</option>';
+  for (const s of all) opts += `<option value="${esc(s.id)}">${esc(s.name)} · ${s.taps.length} tap${s.taps.length === 1 ? '' : 's'}</option>`;
+  sel.innerHTML = opts;
+  sel.value = current || '';
+
+  const s = current && sessions.get(current);
+  const taps = s ? s.taps : [];
+  let rows = '';
+  for (let i = taps.length - 1; i >= 0; i--) {
+    const t = taps[i], prev = taps[i - 1];
+    rows += `<li><span class="n">${i + 1}</span><span class="time">${hms(t.unix_ms)}</span>` +
+      `<span class="delta">${prev ? '+' + ((t.unix_ms - prev.unix_ms) / 1000).toFixed(3) + ' s' : ''}</span>` +
+      `<span class="unix">${t.unix_ms}</span><span class="lbl">${esc(t.label || '')}</span></li>`;
+  }
+  $('list').innerHTML = rows;
+  $('empty').hidden = taps.length > 0;
+  $('count').textContent = taps.length ? `· ${taps.length}` : '';
+  const last = taps[taps.length - 1];
+  $('tapLast').textContent = last ? `#${taps.length} · ${hms(last.unix_ms)}` : 'Logs the moment you touch it';
+  $('btnUndo').disabled = $('btnCopy').disabled = $('btnSave').disabled = !taps.length;
+  renderStatus();
+}
+
+function renderStatus() {
+  const el = $('status');
+  let text, cls = '';
+  if (dbState === 'connecting') text = 'Connecting to your claude.ai account…';
+  else if (dbState === 'none') text = 'Saved on this phone only. Open this page signed in to claude.ai to back taps up to your account.';
+  else if (dbState === 'stopped') { text = dbProblem; cls = 'bad'; }
+  else if (pending.size || writing.size) {
+    text = retrying ? 'Not uploaded yet. Taps are kept on this phone; retrying…' : 'Saving…';
+    cls = 'wait';
+  } else { text = 'All taps saved to your claude.ai account.'; cls = 'ok'; }
+  el.textContent = text;
+  el.className = 'status ' + cls;
+}
+
+let msgTimer = null;
+function showMsg(text) {
+  $('msg').textContent = text;
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => { $('msg').textContent = ''; }, 5000);
+}
+
+/* ---------- export ---------- */
+function csvCell(v) { v = String(v); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; }
+function csvFor(s) {
+  const rows = ['n,unix_ms,time,label'];
+  s.taps.forEach((t, i) => rows.push(`${i + 1},${t.unix_ms},${isoLocal(t.unix_ms)},${csvCell(t.label)}`));
+  return rows.join('\n') + '\n';
+}
+
+/* ---------- clock and screen ---------- */
+function tick() {
+  const now = Date.now(), d = new Date(now);
+  $('clk').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  $('clkMs').textContent = '.' + pad(d.getMilliseconds(), 3);
+  $('clkUnix').textContent = now;
+  requestAnimationFrame(tick);
+}
+let wake = null;
+async function keepAwake() {   // keep the screen on while the page is open, where the phone allows it
+  try {
+    if (!wake && document.visibilityState === 'visible' && navigator.wakeLock) {
+      wake = await navigator.wakeLock.request('screen');
+      wake.addEventListener('release', () => { wake = null; });
+    }
+  } catch (e) {}
+}
+
+/* ---------- wiring ---------- */
+$('tap').addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  onTap(e);
+});
+$('tap').addEventListener('keydown', (e) => {
+  if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); onTap(e); }
+});
+$('tap').addEventListener('contextmenu', (e) => e.preventDefault());
+
+$('btnUndo').onclick = () => {
+  const s = sessions.get(current);
+  if (!s || !s.taps.length) return;
+  const t = s.taps.pop();
+  showMsg(`Removed tap ${s.taps.length + 1} (${hms(t.unix_ms)}).`);
+  changed(current);
+};
+$('btnNew').onclick = () => {
+  current = null;
+  $('csvOut').hidden = true;
+  saveLocal();
+  render();
+  showMsg('A new session starts with your next tap.');
+};
+$('session').onchange = () => {
+  current = $('session').value || null;
+  $('csvOut').hidden = true;
+  saveLocal();
+  render();
+};
+$('label').addEventListener('input', saveLocal);
+$('label').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+
+$('btnCopy').onclick = () => {
+  const s = sessions.get(current);
+  if (!s || !s.taps.length) return;
+  const text = csvFor(s);
+  const fallback = () => {
+    const ta = $('csvOut');
+    ta.value = text; ta.hidden = false; ta.focus(); ta.select();
+    showMsg('Copying is blocked here. The CSV is selected below: copy it from there.');
+  };
+  try {
+    navigator.clipboard.writeText(text).then(() => showMsg(`Copied ${s.taps.length} taps as CSV.`), fallback);
+  } catch (e) { fallback(); }
+};
+$('btnSave').onclick = async () => {
+  const s = sessions.get(current);
+  if (!s || !s.taps.length || !downloads) return;
+  try {
+    await downloads.save({ filename: `sync_taps_${fileStamp(s.created)}.csv`, data: csvFor(s) });
+    showMsg(`Saved ${s.taps.length} taps as CSV.`);
+  } catch (e) {
+    const code = e && e.code;
+    if (code === 'declined') return;
+    if (code === 'rate_limited') { showMsg('A save prompt is already open.'); return; }
+    $('btnSave').hidden = true;
+    showMsg('Saving files is not available here. Use Copy CSV instead.');
+  }
+};
+
+document.addEventListener('visibilitychange', () => { keepAwake(); if (document.visibilityState === 'visible') flushAll(); });
+
+loadLocal();
+render();
+requestAnimationFrame(tick);
+keepAwake();
+initDb();
+(async () => {
+  try { downloads = window.claude && window.claude.use ? await window.claude.use('downloads') : null; } catch (e) { downloads = null; }
+  $('btnSave').hidden = !downloads;
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+# Pozyx positioning with real timestamps
+
+Tracks Pozyx tags in 3D, records their positions with real date and time,
+and logs event markers from a phone so everything can be synced later with
+other apps.
+
+| File | What it is |
+| --- | --- |
+| `pozyx_auto_positioning/pozyx_auto_positioning.ino` | Arduino sketch: measures the anchors, works out their positions, then streams tag positions over USB. |
+| `pozyx_live_map.html` | Web page for the laptop: live 3D/top view, recording, replay, and export to CSV/JSON with real timestamps. |
+| `sync_marker.html` | Phone page: tap a big button to log the exact time of an event. |
+
+## 1. Arduino sketch
+
+1. Install the Pozyx Arduino library.
+2. Place 3 or 4 anchors around the room, powered on. A1, A2 and A3 must not be in a straight line.
+3. In the sketch, fill in the anchor IDs (in order A1–A4), their heights in mm, and the tag IDs.
+4. Upload. Press the red reset button to calibrate again whenever an anchor moves.
+
+Coordinates: (0,0,0) is the floor below anchor A1, x points from A1 to A2,
+A3 is on the positive y side, z is height. Units are mm on the Arduino and
+meters in saved files. In Unity use (x, z, y).
+
+Serial lines (115200 baud):
+
+```
+ANCHOR,<id>,<x>,<y>,<z>        anchor position (mm)
+POS,<tag>,<x>,<y>,<z>,<ms>     tag position (mm) + Arduino time of the measurement
+ERR,<tag>,<ms>                 failed measurement
+CLOCK,<ms>                     Arduino time, used to link it to the laptop clock
+```
+
+`<ms>` is milliseconds since the Arduino started (it has no real clock).
+
+## 2. Live map (laptop)
+
+Open `pozyx_live_map.html` in Chrome or Edge (close the Arduino IDE Serial
+Monitor first) and click **Connect Arduino**. **Demo** shows made-up data
+without hardware.
+
+Click **Record**, then **Stop**, then **Save CSV** or **Save JSON**. The page
+uses the `CLOCK` lines to convert every position to the laptop's real clock,
+correcting for USB delay and for the Arduino clock running slightly fast or
+slow.
+
+```
+t,type,id,x,y,z,unix_ms,time
+0,anchor,6A67,0,0,0.7,,
+0.154,tag,6A77,1.52,0.83,1.21,1792935108195,2026-10-25T16:31:48.195+02:00
+```
+
+- `unix_ms`: real time of the measurement, milliseconds since 1970-01-01 UTC. Use this to sync.
+- `time`: the same moment as local date and time.
+- `t`: seconds since Record was pressed (used for replay).
+
+**Open recording** replays a saved CSV or JSON file.
+
+## 3. Sync marker (phone)
+
+Open `sync_marker.html` on the phone and press **Tap** at the moment
+something happens (start of a test, a jump, a drop). The time is taken from
+the touch itself. An optional label is saved with each tap.
+
+```
+n,unix_ms,time,label
+1,1792935802517,2026-10-25T16:03:22.517+02:00,start
+```
+
+The hosted copy on claude.ai also backs taps up to the account and has
+**Save CSV**. Opened as a plain file, taps stay on the phone; use
+**Copy CSV** to get them out.
+
+## Syncing tips
+
+- Both files use the same `unix_ms`, so rows can be matched directly.
+- Each device stamps with its own clock. Keep automatic time on for the phone
+  and the laptop. On Windows, click Settings → Time & language → Date & time →
+  **Sync now** before a session.
+- To measure any remaining offset, tap the phone button at the instant you
+  drop the tag on the floor. The impact shows as a sharp change in z; the gap
+  between it and the tap is the clock offset.

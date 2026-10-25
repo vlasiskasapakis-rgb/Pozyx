@@ -1,0 +1,906 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pozyx Live Map</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --text: #1f1e1b; --muted: #6b6a64;
+    --border: #dedcd4; --grid: #ebe9e2; --grid-strong: #d3d1c7;
+    --accent: #0f6e56; --accent-text: #ffffff; --anchor: #1d9e75; --danger: #a32d2d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1b19; --panel: #242422; --text: #ecebe6; --muted: #a3a29b;
+      --border: #3a3936; --grid: #2c2c2a; --grid-strong: #444441;
+      --accent: #5dcaa5; --accent-text: #04342c; --anchor: #5dcaa5; --danger: #f09595;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 auto 0 0; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; color: var(--muted); }
+  button { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: .45; cursor: default; }
+  label { font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  .status { width: 100%; font-size: 13px; color: var(--muted); }
+  .status.err { color: var(--danger); }
+  main { display: grid; grid-template-columns: 1fr 340px; gap: 16px; padding: 16px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+  .side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  #map { width: 100%; height: 72vh; min-height: 360px; display: block; touch-action: none; user-select: none; }
+  #map.rot { cursor: grab; }
+  #map.rot:active { cursor: grabbing; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .tri { display: inline-block; width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid var(--anchor); margin-right: 6px; vertical-align: middle; }
+  .empty { color: var(--muted); font-size: 13px; }
+  #log { font-family: ui-monospace, Consolas, monospace; font-size: 12px; height: 180px; overflow: auto; white-space: pre; color: var(--muted); margin: 0; }
+  .stale { color: var(--muted); }
+  [hidden] { display: none !important; }
+  button.recording { background: var(--danger); border-color: var(--danger); color: var(--panel); font-variant-numeric: tabular-nums; }
+  .replay { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .replay input[type=range] { flex: 1; min-width: 160px; accent-color: var(--accent); }
+  .replay select { font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  .rtime { font-size: 13px; font-variant-numeric: tabular-nums; min-width: 90px; }
+  .rname { font-size: 12px; color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pozyx live map</h1>
+  <button id="btnConnect" class="primary">Connect Arduino</button>
+  <button id="btnDisconnect" disabled>Disconnect</button>
+  <button id="btnRestart" disabled title="Restarts the Arduino, which re-measures the anchors">Recalibrate</button>
+  <button id="btnView">Top view</button>
+  <button id="btnDemo">Demo</button>
+  <button id="btnClear">Clear trails</button>
+  <button id="btnRec">● Record</button>
+  <button id="btnSaveJson" disabled>Save JSON</button>
+  <button id="btnSaveCsv" disabled>Save CSV</button>
+  <button id="btnOpen">Open recording</button>
+  <input type="file" id="fileOpen" accept=".json,.csv" hidden>
+  <label><input type="checkbox" id="chkSmooth" checked> Smoothing</label>
+  <label><input type="checkbox" id="chkTrail" checked> Trails</label>
+  <div id="status" class="status">Not connected. Close the Arduino IDE Serial Monitor first, then click Connect (Chrome or Edge).</div>
+</header>
+
+<main>
+  <div class="card">
+    <svg id="map" role="img" aria-label="Map of anchors and tags"></svg>
+    <div id="replayBar" class="replay" hidden>
+      <button id="btnPlay">Pause</button>
+      <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Replay position">
+      <span id="replayTime" class="rtime">0.0 / 0.0 s</span>
+      <select id="speed" aria-label="Replay speed">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+      <span id="replayName" class="rname"></span>
+      <button id="btnExitReplay">Exit replay</button>
+    </div>
+  </div>
+  <div class="side">
+    <div class="card">
+      <h2>Tags</h2>
+      <div id="tagTable"><div class="empty">No tag positions yet.</div></div>
+    </div>
+    <div class="card">
+      <h2>Anchors</h2>
+      <div id="anchorTable"><div class="empty">No anchors yet. They appear after calibration.</div></div>
+    </div>
+    <div class="card">
+      <h2>Serial data</h2>
+      <pre id="log"></pre>
+    </div>
+  </div>
+</main>
+
+<script>
+const COLORS = ['#d85a30', '#534ab7', '#d4537e', '#185fa5', '#ba7517', '#3b6d11'];
+const TRAIL_LEN = 60;
+const SMOOTH_N = 5;
+
+const anchors = new Map();   // id -> {x, y, z}
+const tags = new Map();      // id -> {raw:[], trail:[], pos, color, last, errors}
+
+let port = null, reader = null, keepReading = false, readDone = null, demoTimer = null;
+const logLines = [];
+
+const $ = (id) => document.getElementById(id);
+const svg = $('map');
+
+function setStatus(text, isErr) {
+  $('status').textContent = text;
+  $('status').classList.toggle('err', !!isErr);
+}
+
+function log(line) {
+  logLines.push(line);
+  if (logLines.length > 200) logLines.shift();
+  scheduleLog();
+}
+
+let logPending = false;
+function scheduleLog() {
+  if (logPending) return;
+  logPending = true;
+  setTimeout(() => {
+    logPending = false;
+    const el = $('log');
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+    el.textContent = logLines.join('\n');
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  }, 150);
+}
+
+function getTag(id) {
+  if (!tags.has(id)) {
+    tags.set(id, { raw: [], trail: [], pos: null, color: COLORS[tags.size % COLORS.length], last: 0, errors: 0 });
+  }
+  return tags.get(id);
+}
+
+// at = when the line arrived on this computer (Unix ms)
+function handleLine(line, at = Date.now()) {
+  line = line.trim();
+  if (!line) return;
+  const p = line.split(',');
+  const kind = p[0];
+  if (kind === 'CLOCK' && p.length >= 2) {   // not shown in the log, there is one per measurement
+    const ms = parseInt(p[1], 10);
+    if (Number.isFinite(ms)) addClock(ms, at);
+    return;
+  }
+  log(line);
+  if (replay.active) return;           // live data is paused while replaying
+  if (kind === 'ANCHOR' && p.length >= 5) {
+    const id = p[1].toUpperCase();
+    const a = { x: +p[2], y: +p[3], z: +p[4] };
+    if ([a.x, a.y, a.z].every(Number.isFinite)) { ingestAnchor(id, a); recAnchor(id, a); }
+  } else if (kind === 'POS' && p.length >= 5) {
+    const id = p[1].toUpperCase();
+    const x = +p[2], y = +p[3], z = +p[4];
+    if (![x, y, z].every(Number.isFinite)) return;
+    let ms = p.length >= 6 ? parseInt(p[5], 10) : NaN;   // Arduino time of the measurement, if sent
+    if (Number.isFinite(ms)) noteArduinoMs(ms); else ms = null;
+    ingestPos(id, x, y, z);
+    recPos(id, x, y, z, ms, at);
+  } else if (kind === 'ERR' && p.length >= 2) {
+    const t = getTag(p[1].toUpperCase());
+    t.errors++;
+    scheduleDraw();
+  }
+}
+
+function ingestAnchor(id, a) {
+  anchors.set(id, a);
+  scheduleDraw();
+}
+
+function ingestPos(id, x, y, z) {
+  {
+    const t = getTag(id);
+    t.raw.push({ x, y, z });
+    if (t.raw.length > SMOOTH_N) t.raw.shift();
+    const src = $('chkSmooth').checked ? t.raw : [t.raw[t.raw.length - 1]];
+    const n = src.length;
+    t.pos = {
+      x: src.reduce((s, q) => s + q.x, 0) / n,
+      y: src.reduce((s, q) => s + q.y, 0) / n,
+      z: src.reduce((s, q) => s + q.z, 0) / n,
+    };
+    t.trail.push({ x: t.pos.x, y: t.pos.y, z: t.pos.z });
+    if (t.trail.length > TRAIL_LEN) t.trail.shift();
+    t.last = Date.now();
+    scheduleDraw();
+  }
+}
+
+/* ---------- real time ---------- */
+// The Arduino has no clock that knows the date, only a stopwatch (ms since it started).
+// It sends a "CLOCK,<ms>" line every measurement; the moment each one arrives here links the
+// stopwatch to this computer's clock. USB adds a small random delay, so per 2-second window we
+// keep the fastest arrival and fit a straight line through those (the Arduino clock runs a
+// little fast or slow). When a recording stops, every position is converted to real time.
+const clock = { pairs: [], seg: 0, lastMs: -1 };   // seg = Arduino session, +1 on every restart
+
+function resetClock() {
+  clock.pairs = [];
+  clock.seg++;
+  clock.lastMs = -1;
+}
+function noteArduinoMs(ms) {
+  if (ms < clock.lastMs) clock.seg++;   // the Arduino restarted: its stopwatch is back at 0
+  clock.lastMs = ms;
+}
+function addClock(ms, at) {
+  noteArduinoMs(ms);
+  clock.pairs.push({ seg: clock.seg, ms, at });
+  if (!rec.on) {   // outside a recording, the last 30 s are enough
+    while (clock.pairs.length && clock.pairs[0].at < at - 30000) clock.pairs.shift();
+  }
+}
+// Returns a function (Arduino ms -> Unix ms) for one Arduino session, or null without data.
+function fitClock(pairs) {
+  const best = new Map();
+  for (const p of pairs) {
+    const k = Math.floor(p.ms / 2000), off = p.at - p.ms;
+    if (!best.has(k) || off < best.get(k).off) best.set(k, { ms: p.ms, off });
+  }
+  const pts = [...best.values()];
+  if (!pts.length) return null;
+  const ref = Math.min(...pts.map(q => q.off));
+  if (pts.length < 3) return (ms) => ms + ref;
+  const mx = pts.reduce((s, q) => s + q.ms, 0) / pts.length;
+  const mo = pts.reduce((s, q) => s + q.off - ref, 0) / pts.length;
+  let sxy = 0, sxx = 0;
+  for (const q of pts) { sxy += (q.ms - mx) * (q.off - ref - mo); sxx += (q.ms - mx) ** 2; }
+  let slope = sxx > 0 ? sxy / sxx : 0;
+  if (Math.abs(slope) > 0.01) slope = 0;   // more than 1 % is not a real clock error
+  return (ms) => ms + ref + mo + slope * (ms - mx);
+}
+// Local date and time with the UTC offset, e.g. 2026-10-25T16:03:22.517+02:00
+function isoLocal(unixMs) {
+  const d = new Date(unixMs);
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  const tz = -d.getTimezoneOffset();
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}` +
+    `${tz >= 0 ? '+' : '-'}${p(Math.floor(Math.abs(tz) / 60))}:${p(Math.abs(tz) % 60)}`;
+}
+
+/* ---------- recording ---------- */
+const rec = { on: false, t0: 0, startedAt: null, anchors: new Map(), samples: [], data: null, unsynced: 0 };
+const r3 = (v) => Math.round(v * 1000) / 1000;   // 3 decimals
+const mm2m = (v) => Math.round(v) / 1000;         // mm -> m, mm precision
+
+function startRec() {
+  if (replay.active) return;
+  rec.on = true;
+  rec.t0 = performance.now();
+  rec.startedAt = new Date();
+  rec.samples = [];
+  rec.anchors = new Map(anchors);
+  rec.data = null;
+  updateRecUI();
+}
+function stopRec() {
+  if (!rec.on) return;
+  rec.on = false;
+  rec.data = buildRecording();
+  updateRecUI();
+  const note = rec.unsynced
+    ? ` Note: ${rec.unsynced} positions had no Arduino clock data, so they use the time they arrived (less exact). Upload the latest sketch.`
+    : '';
+  setStatus(`Recorded ${rec.data.samples.length} positions over ${rec.data.duration.toFixed(1)} s. Click "Save JSON" or "Save CSV" to keep it.${note}`, !!rec.unsynced);
+}
+function recAnchor(id, a) { if (rec.on) rec.anchors.set(id, a); }
+function recPos(id, x, y, z, ms, at) {
+  if (rec.on) rec.samples.push({ at, ms, seg: clock.seg, id, x, y, z });
+}
+function buildRecording() {
+  const fits = new Map();   // Arduino session -> clock fit
+  rec.unsynced = 0;
+  const realTime = (s) => {
+    if (s.ms !== null) {
+      if (!fits.has(s.seg)) fits.set(s.seg, fitClock(clock.pairs.filter(q => q.seg === s.seg)));
+      const f = fits.get(s.seg);
+      if (f) return Math.round(f(s.ms));
+    }
+    rec.unsynced++;
+    return s.at;
+  };
+  const start = rec.startedAt.getTime();
+  const samples = rec.samples.map(s => {
+    const unix = realTime(s);
+    return { t: r3(Math.max(0, (unix - start) / 1000)), unix_ms: unix, time: isoLocal(unix), id: s.id, x: mm2m(s.x), y: mm2m(s.y), z: mm2m(s.z) };
+  });
+  const dur = samples.length ? Math.max(...samples.map(s => s.t)) : 0;
+  return {
+    format: 'pozyx-recording',
+    version: 3,
+    units: 'meters',
+    coordinates: 'Pozyx: x and y along the floor, z up. Origin = floor directly below anchor A1. In Unity use (x, z, y).',
+    time: 'unix_ms = real time of the measurement (milliseconds since 1970-01-01 UTC, from this computer\'s clock). time = the same as local date and time. t = seconds since Record was pressed.',
+    startedAt: isoLocal(start),
+    startedAtUnixMs: start,
+    duration: r3(dur),
+    anchors: [...rec.anchors].map(([id, a]) => ({ id, x: mm2m(a.x), y: mm2m(a.y), z: mm2m(a.z) })),
+    samples,
+  };
+}
+function updateRecUI() {
+  const b = $('btnRec');
+  b.classList.toggle('recording', rec.on);
+  b.textContent = rec.on
+    ? `■ Stop ${((performance.now() - rec.t0) / 1000).toFixed(1)} s · ${rec.samples.length} pts`
+    : '● Record';
+  $('btnSaveJson').disabled = !rec.data;
+  $('btnSaveCsv').disabled = !rec.data;
+}
+setInterval(() => { if (rec.on) updateRecUI(); }, 200);
+
+function fileStamp(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `pozyx_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+function download(name, text, type) {
+  const blob = new Blob([text], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function saveJson() {
+  if (!rec.data) return;
+  download(fileStamp(rec.startedAt) + '.json', JSON.stringify(rec.data, null, 2), 'application/json');
+}
+function saveCsv() {
+  if (!rec.data) return;
+  const d = rec.data;
+  const lines = ['t,type,id,x,y,z,unix_ms,time'];
+  for (const a of d.anchors) lines.push(`0,anchor,${a.id},${a.x},${a.y},${a.z},,`);
+  for (const s of d.samples) lines.push(`${s.t},tag,${s.id},${s.x},${s.y},${s.z},${s.unix_ms},${s.time}`);
+  download(fileStamp(rec.startedAt) + '.csv', lines.join('\n') + '\n', 'text/csv');
+}
+
+/* ---------- replay ---------- */
+const replay = { active: false, data: null, name: '', playing: false, t: 0, idx: 0, lastFrame: 0 };
+
+function parseRecording(text, name) {
+  let anchorsOut = [], samples = [];
+  if (name.toLowerCase().endsWith('.csv')) {
+    const rows = text.split(/\r?\n/).map(r => r.trim()).filter(Boolean);
+    for (const row of rows.slice(1)) {
+      const [t, type, id, x, y, z] = row.split(',');
+      const v = { t: +t, id: String(id).toUpperCase(), x: +x, y: +y, z: +z };
+      if (![v.t, v.x, v.y, v.z].every(Number.isFinite)) continue;
+      if (type === 'anchor') anchorsOut.push(v); else samples.push(v);
+    }
+  } else {
+    const d = JSON.parse(text);
+    if (!d || !Array.isArray(d.samples)) throw new Error('not a Pozyx recording');
+    anchorsOut = (d.anchors || []).map(a => ({ id: String(a.id).toUpperCase(), x: +a.x, y: +a.y, z: +a.z }));
+    samples = d.samples.map(s => ({ t: +s.t, id: String(s.id).toUpperCase(), x: +s.x, y: +s.y, z: +s.z }))
+      .filter(s => [s.t, s.x, s.y, s.z].every(Number.isFinite));
+  }
+  samples.sort((a, b) => a.t - b.t);
+  const duration = samples.length ? samples[samples.length - 1].t : 0;
+  return { anchors: anchorsOut, samples, duration };
+}
+
+function clearTables() {
+  $('tagTable').innerHTML = '<div class="empty">No tag positions yet.</div>';
+  $('anchorTable').innerHTML = '<div class="empty">No anchors yet. They appear after calibration.</div>';
+}
+
+function startReplay(data, name) {
+  if (rec.on) stopRec();
+  stopDemo();
+  replay.active = true;
+  replay.data = data;
+  replay.name = name;
+  anchors.clear();
+  tags.clear();
+  clearTables();
+  for (const a of data.anchors) ingestAnchor(a.id, { x: a.x * 1000, y: a.y * 1000, z: a.z * 1000 });
+  $('replayBar').hidden = false;
+  $('replayName').textContent = name;
+  $('seek').max = Math.max(1, Math.round(data.duration * 1000));
+  $('btnRec').disabled = true;
+  $('btnDemo').disabled = true;
+  setStatus(`Replaying "${name}" (${data.samples.length} positions, ${data.duration.toFixed(1)} s). Live data is paused.`);
+  seekTo(0);
+  replay.playing = true;
+  replay.lastFrame = performance.now();
+  updateReplayUI();
+  requestAnimationFrame(replayTick);
+}
+
+function replayTick(now) {
+  if (!replay.active) return;
+  if (replay.playing) {
+    replay.t += (now - replay.lastFrame) / 1000 * +$('speed').value;
+    if (replay.t >= replay.data.duration) {
+      replay.t = replay.data.duration;
+      replay.playing = false;
+    }
+    advanceTo(replay.t);
+  }
+  replay.lastFrame = now;
+  updateReplayUI();
+  requestAnimationFrame(replayTick);
+}
+
+function advanceTo(t) {
+  const s = replay.data.samples;
+  while (replay.idx < s.length && s[replay.idx].t <= t) {
+    const q = s[replay.idx++];
+    ingestPos(q.id, q.x * 1000, q.y * 1000, q.z * 1000);
+  }
+}
+
+function seekTo(t) {
+  replay.t = Math.max(0, Math.min(t, replay.data.duration));
+  tags.clear();
+  $('tagTable').innerHTML = '<div class="empty">No tag positions yet.</div>';
+  const s = replay.data.samples;
+  let i = 0;
+  while (i < s.length && s[i].t <= replay.t) i++;
+  replay.idx = Math.max(0, i - TRAIL_LEN * 3);   // re-feed recent history for trails
+  advanceTo(replay.t);
+  scheduleDraw();
+}
+
+function updateReplayUI() {
+  if (!replay.active) return;
+  $('btnPlay').textContent = replay.playing ? 'Pause' : 'Play';
+  if (!seeking) $('seek').value = Math.round(replay.t * 1000);
+  $('replayTime').textContent = `${replay.t.toFixed(1)} / ${replay.data.duration.toFixed(1)} s`;
+}
+
+function exitReplay() {
+  replay.active = false;
+  replay.playing = false;
+  $('replayBar').hidden = true;
+  $('btnRec').disabled = false;
+  $('btnDemo').disabled = false;
+  anchors.clear();
+  tags.clear();
+  clearTables();
+  setStatus(port ? 'Connected. Back to live data (anchors reappear within a few seconds).' : 'Not connected.');
+  scheduleDraw();
+}
+
+let seeking = false;
+
+/* ---------- drawing ---------- */
+let drawPending = false;
+function scheduleDraw() {
+  if (drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(() => { drawPending = false; draw(); renderTables(); });
+}
+
+function niceStep(span) {
+  if (span <= 6000) return 500;
+  if (span <= 15000) return 1000;
+  if (span <= 40000) return 2000;
+  return 5000;
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function draw() {
+  const W = svg.clientWidth, H = svg.clientHeight;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  const pts = [...anchors.values()].map(a => ({ x: a.x, y: a.y }));
+  for (const t of tags.values()) {
+    if (t.pos) pts.push(t.pos);
+    if ($('chkTrail').checked) pts.push(...t.trail);
+  }
+  if (pts.length === 0) {
+    svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="var(--muted)" font-size="14">Waiting for data…</text>`;
+    return;
+  }
+  if (viewMode === '3d') { draw3d(W, H); return; }
+
+  let minX = Math.min(0, ...pts.map(p => p.x)), maxX = Math.max(0, ...pts.map(p => p.x));
+  let minY = Math.min(0, ...pts.map(p => p.y)), maxY = Math.max(0, ...pts.map(p => p.y));
+  let spanX = Math.max(maxX - minX, 1000), spanY = Math.max(maxY - minY, 1000);
+  const pad = Math.max(spanX, spanY) * 0.12 + 300;
+  minX -= pad; maxX = minX + spanX + 2 * pad;
+  minY -= pad; maxY = minY + spanY + 2 * pad;
+
+  const margin = 36;
+  const scale = Math.min((W - 2 * margin) / (maxX - minX), (H - 2 * margin) / (maxY - minY));
+  const offX = margin + ((W - 2 * margin) - (maxX - minX) * scale) / 2;
+  const offY = margin + ((H - 2 * margin) - (maxY - minY) * scale) / 2;
+  const sx = x => offX + (x - minX) * scale;
+  const sy = y => H - (offY + (y - minY) * scale);   // y up
+
+  let out = '';
+
+  // grid
+  const step = niceStep(Math.max(maxX - minX, maxY - minY));
+  for (let gx = Math.ceil(minX / step) * step; gx <= maxX; gx += step) {
+    const strong = gx % 1000 === 0;
+    out += `<line x1="${sx(gx)}" y1="${sy(minY)}" x2="${sx(gx)}" y2="${sy(maxY)}" stroke="var(${strong ? '--grid-strong' : '--grid'})" stroke-width="${gx === 0 ? 1.5 : 0.75}"/>`;
+    if (strong) out += `<text x="${sx(gx)}" y="${sy(minY) + 16}" text-anchor="middle" font-size="11" fill="var(--muted)">${(gx / 1000).toFixed(0)} m</text>`;
+  }
+  for (let gy = Math.ceil(minY / step) * step; gy <= maxY; gy += step) {
+    const strong = gy % 1000 === 0;
+    out += `<line x1="${sx(minX)}" y1="${sy(gy)}" x2="${sx(maxX)}" y2="${sy(gy)}" stroke="var(${strong ? '--grid-strong' : '--grid'})" stroke-width="${gy === 0 ? 1.5 : 0.75}"/>`;
+    if (strong) out += `<text x="${sx(minX) - 6}" y="${sy(gy) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${(gy / 1000).toFixed(0)} m</text>`;
+  }
+
+  // anchor outline
+  const aList = [...anchors.entries()];
+  if (aList.length >= 3) {
+    const mx = aList.reduce((s, [, a]) => s + a.x, 0) / aList.length;
+    const my = aList.reduce((s, [, a]) => s + a.y, 0) / aList.length;
+    const ordered = aList.map(([, a]) => a).sort((p, q) => Math.atan2(p.y - my, p.x - mx) - Math.atan2(q.y - my, q.x - mx));
+    const poly = ordered.map(a => `${sx(a.x)},${sy(a.y)}`).join(' ');
+    out += `<polygon points="${poly}" fill="var(--anchor)" fill-opacity="0.06" stroke="var(--anchor)" stroke-opacity="0.5" stroke-dasharray="5 5"/>`;
+  }
+
+  // trails
+  if ($('chkTrail').checked) {
+    for (const t of tags.values()) {
+      if (t.trail.length > 1) {
+        out += `<polyline points="${t.trail.map(p => `${sx(p.x)},${sy(p.y)}`).join(' ')}" fill="none" stroke="${t.color}" stroke-opacity="0.4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      }
+    }
+  }
+
+  // anchors
+  aList.forEach(([id, a], i) => {
+    const x = sx(a.x), y = sy(a.y);
+    out += `<polygon points="${x},${y - 10} ${x - 9},${y + 7} ${x + 9},${y + 7}" fill="var(--anchor)"/>`;
+    out += `<text x="${x}" y="${y + 22}" text-anchor="middle" font-size="12" font-weight="600" fill="var(--text)">A${i + 1} · ${esc(id)}</text>`;
+    out += `<text x="${x}" y="${y + 36}" text-anchor="middle" font-size="11" fill="var(--muted)">${(a.x / 1000).toFixed(2)}, ${(a.y / 1000).toFixed(2)}, ${(a.z / 1000).toFixed(2)} m</text>`;
+  });
+
+  // tags
+  const now = Date.now();
+  for (const [id, t] of tags) {
+    if (!t.pos) continue;
+    const x = sx(t.pos.x), y = sy(t.pos.y);
+    const stale = !replay.active && now - t.last > 3000;
+    out += `<circle cx="${x}" cy="${y}" r="16" fill="${t.color}" fill-opacity="${stale ? 0.08 : 0.18}"/>`;
+    out += `<circle cx="${x}" cy="${y}" r="7" fill="${t.color}" fill-opacity="${stale ? 0.35 : 1}" stroke="var(--panel)" stroke-width="2"/>`;
+    out += `<text x="${x + 14}" y="${y - 12}" font-size="12" font-weight="600" fill="${t.color}">${esc(id)}</text>`;
+    out += `<text x="${x + 14}" y="${y + 2}" font-size="11" fill="var(--muted)">z ${(t.pos.z / 1000).toFixed(2)} m</text>`;
+  }
+
+  svg.innerHTML = out;
+}
+
+/* ---------- 3D view ---------- */
+let viewMode = '3d';
+const DEFAULT_YAW = -0.6, DEFAULT_PITCH = 0.55;
+let yaw = DEFAULT_YAW, pitch = DEFAULT_PITCH, zoom = 1;
+
+function draw3d(W, H) {
+  const aList = [...anchors.entries()];
+  const showTrail = $('chkTrail').checked;
+
+  const pts = aList.map(([, a]) => a);
+  for (const t of tags.values()) {
+    if (t.pos) pts.push(t.pos);
+    if (showTrail) pts.push(...t.trail);
+  }
+  const pad = 300;
+  const minX = Math.min(0, ...pts.map(p => p.x)) - pad, maxX = Math.max(0, ...pts.map(p => p.x)) + pad;
+  const minY = Math.min(0, ...pts.map(p => p.y)) - pad, maxY = Math.max(0, ...pts.map(p => p.y)) + pad;
+  const maxZ = Math.max(2500, ...pts.map(p => p.z || 0)) + 200;
+
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = maxZ / 2;
+  const size = Math.max(maxX - minX, maxY - minY, maxZ);
+  const camDist = size * 2.2;
+  const s = Math.min(W, H) / (size * 1.45) * zoom;
+  const cyw = Math.cos(yaw), syw = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+
+  // world (mm) -> screen (px); x right, y away from viewer, z up
+  const P = (x, y, z) => {
+    x -= cx; y -= cy; z -= cz;
+    const x1 = x * cyw - y * syw;
+    const y1 = x * syw + y * cyw;
+    const up = z * cp + y1 * sp;
+    const depth = y1 * cp - z * sp;
+    const f = camDist / Math.max(camDist + depth, camDist * 0.2);
+    return [W / 2 + x1 * f * s, H / 2 - up * f * s];
+  };
+  const xy = (p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
+  const L = (a, b, attrs) => {
+    const p = P(...a), q = P(...b);
+    return `<line x1="${p[0].toFixed(1)}" y1="${p[1].toFixed(1)}" x2="${q[0].toFixed(1)}" y2="${q[1].toFixed(1)}" ${attrs}/>`;
+  };
+
+  let out = '';
+
+  // floor
+  const floor = [[minX, minY, 0], [maxX, minY, 0], [maxX, maxY, 0], [minX, maxY, 0]];
+  out += `<polygon points="${floor.map(p => xy(P(...p))).join(' ')}" fill="var(--grid)" fill-opacity="0.6"/>`;
+  for (let gx = Math.ceil(minX / 1000) * 1000; gx <= maxX; gx += 1000) {
+    out += L([gx, minY, 0], [gx, maxY, 0], `stroke="var(--grid-strong)" stroke-width="${gx === 0 ? 1.4 : 0.6}"`);
+  }
+  for (let gy = Math.ceil(minY / 1000) * 1000; gy <= maxY; gy += 1000) {
+    out += L([minX, gy, 0], [maxX, gy, 0], `stroke="var(--grid-strong)" stroke-width="${gy === 0 ? 1.4 : 0.6}"`);
+  }
+
+  // room box
+  const box = 'stroke="var(--muted)" stroke-opacity="0.45" stroke-dasharray="4 4" stroke-width="0.8"';
+  const corners = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]];
+  corners.forEach(([x, y], i) => {
+    const [nx, ny] = corners[(i + 1) % 4];
+    out += L([x, y, 0], [x, y, maxZ], box);
+    out += L([x, y, maxZ], [nx, ny, maxZ], box);
+  });
+
+  // axes from 0,0,0 (floor below A1), 1 m long
+  const axes = [
+    { to: [1000, 0, 0], c: '#d85a30', n: 'x' },
+    { to: [0, 1000, 0], c: '#185fa5', n: 'y' },
+    { to: [0, 0, 1000], c: '#ba7517', n: 'z' },
+  ];
+  for (const a of axes) {
+    out += L([0, 0, 0], a.to, `stroke="${a.c}" stroke-width="2" stroke-linecap="round"`);
+    const e = P(...a.to);
+    out += `<text x="${(e[0] + 5).toFixed(1)}" y="${(e[1] - 5).toFixed(1)}" font-size="12" font-weight="600" fill="${a.c}">${a.n}</text>`;
+  }
+
+  // lines between anchors (the measured "frame")
+  for (let i = 0; i < aList.length; i++) {
+    for (let j = i + 1; j < aList.length; j++) {
+      const a = aList[i][1], b = aList[j][1];
+      out += L([a.x, a.y, a.z], [b.x, b.y, b.z], 'stroke="var(--anchor)" stroke-opacity="0.25" stroke-width="1"');
+    }
+  }
+
+  // anchors
+  aList.forEach(([id, a], i) => {
+    out += L([a.x, a.y, a.z], [a.x, a.y, 0], 'stroke="var(--anchor)" stroke-opacity="0.6" stroke-dasharray="3 3" stroke-width="1"');
+    const f = P(a.x, a.y, 0);
+    out += `<circle cx="${f[0].toFixed(1)}" cy="${f[1].toFixed(1)}" r="3" fill="var(--anchor)" fill-opacity="0.5"/>`;
+    const [x, y] = P(a.x, a.y, a.z);
+    out += `<polygon points="${x},${y - 10} ${x - 9},${y + 7} ${x + 9},${y + 7}" fill="var(--anchor)"/>`;
+    out += `<text x="${x + 12}" y="${y - 4}" font-size="12" font-weight="600" fill="var(--text)">A${i + 1} · ${esc(id)}</text>`;
+    out += `<text x="${x + 12}" y="${y + 10}" font-size="11" fill="var(--muted)">z ${(a.z / 1000).toFixed(2)} m</text>`;
+  });
+
+  // tags
+  const now = Date.now();
+  for (const [id, t] of tags) {
+    if (!t.pos) continue;
+    if (showTrail && t.trail.length > 1) {
+      out += `<polyline points="${t.trail.map(p => xy(P(p.x, p.y, p.z || 0))).join(' ')}" fill="none" stroke="${t.color}" stroke-opacity="0.45" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+    const stale = !replay.active && now - t.last > 3000;
+    out += L([t.pos.x, t.pos.y, t.pos.z], [t.pos.x, t.pos.y, 0], `stroke="${t.color}" stroke-opacity="0.6" stroke-dasharray="3 3" stroke-width="1"`);
+    const sh = P(t.pos.x, t.pos.y, 0);
+    out += `<ellipse cx="${sh[0].toFixed(1)}" cy="${sh[1].toFixed(1)}" rx="9" ry="4" fill="${t.color}" fill-opacity="0.25"/>`;
+    const [x, y] = P(t.pos.x, t.pos.y, t.pos.z);
+    out += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="16" fill="${t.color}" fill-opacity="${stale ? 0.08 : 0.18}"/>`;
+    out += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="${t.color}" fill-opacity="${stale ? 0.35 : 1}" stroke="var(--panel)" stroke-width="2"/>`;
+    out += `<text x="${(x + 14).toFixed(1)}" y="${(y - 12).toFixed(1)}" font-size="12" font-weight="600" fill="${t.color}">${esc(id)}</text>`;
+    out += `<text x="${(x + 14).toFixed(1)}" y="${(y + 2).toFixed(1)}" font-size="11" fill="var(--muted)">z ${(t.pos.z / 1000).toFixed(2)} m</text>`;
+  }
+
+  out += `<text x="12" y="${H - 12}" font-size="11" fill="var(--muted)">Drag to rotate · scroll to zoom · double-click to reset · grid = 1 m</text>`;
+  svg.innerHTML = out;
+}
+
+let drag = null;
+svg.addEventListener('pointerdown', (e) => {
+  if (viewMode !== '3d') return;
+  drag = { x: e.clientX, y: e.clientY, yaw, pitch };
+  svg.setPointerCapture(e.pointerId);
+});
+svg.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  yaw = drag.yaw + (e.clientX - drag.x) * 0.008;
+  pitch = Math.min(1.55, Math.max(0.05, drag.pitch + (e.clientY - drag.y) * 0.008));
+  scheduleDraw();
+});
+svg.addEventListener('pointerup', () => { drag = null; });
+svg.addEventListener('pointercancel', () => { drag = null; });
+svg.addEventListener('wheel', (e) => {
+  if (viewMode !== '3d') return;
+  e.preventDefault();
+  zoom = Math.min(4, Math.max(0.4, zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+  scheduleDraw();
+}, { passive: false });
+svg.addEventListener('dblclick', () => {
+  yaw = DEFAULT_YAW; pitch = DEFAULT_PITCH; zoom = 1;
+  scheduleDraw();
+});
+
+function setView(mode) {
+  viewMode = mode;
+  $('btnView').textContent = mode === '3d' ? 'Top view' : '3D view';
+  svg.classList.toggle('rot', mode === '3d');
+  scheduleDraw();
+}
+
+function renderTables() {
+  const now = Date.now();
+  if (tags.size) {
+    let h = '<table><tr><th>Tag</th><th>x (m)</th><th>y (m)</th><th>z (m)</th><th>Updated</th></tr>';
+    for (const [id, t] of tags) {
+      const age = t.last ? ((now - t.last) / 1000) : null;
+      const cls = age === null || age > 3 ? ' class="stale"' : '';
+      h += `<tr${cls}><td><span class="dot" style="background:${t.color}"></span>${esc(id)}</td>`;
+      if (t.pos) {
+        h += `<td class="num">${(t.pos.x / 1000).toFixed(2)}</td><td class="num">${(t.pos.y / 1000).toFixed(2)}</td><td class="num">${(t.pos.z / 1000).toFixed(2)}</td>`;
+      } else {
+        h += '<td>–</td><td>–</td><td>–</td>';
+      }
+      h += `<td>${age === null ? 'never' : age < 1 ? 'now' : age.toFixed(0) + ' s ago'}${t.errors ? ` · ${t.errors} err` : ''}</td></tr>`;
+    }
+    $('tagTable').innerHTML = h + '</table>';
+  }
+  if (anchors.size) {
+    let h = '<table><tr><th>Anchor</th><th>x (m)</th><th>y (m)</th><th>z (m)</th></tr>';
+    [...anchors.entries()].forEach(([id, a], i) => {
+      h += `<tr><td><span class="tri"></span>A${i + 1} · ${esc(id)}</td><td class="num">${(a.x / 1000).toFixed(2)}</td><td class="num">${(a.y / 1000).toFixed(2)}</td><td class="num">${(a.z / 1000).toFixed(2)}</td></tr>`;
+    });
+    $('anchorTable').innerHTML = h + '</table>';
+  }
+}
+
+setInterval(() => { if (tags.size) scheduleDraw(); }, 1000);
+window.addEventListener('resize', scheduleDraw);
+
+/* ---------- serial ---------- */
+async function connect() {
+  if (!('serial' in navigator)) {
+    setStatus('This browser cannot talk to USB devices. Open this file in Chrome or Edge.', true);
+    return;
+  }
+  stopDemo();
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+  } catch (e) {
+    port = null;
+    setStatus('Could not connect: ' + e.message + ' (Is the Arduino IDE Serial Monitor still open? Close it.)', true);
+    return;
+  }
+  $('btnConnect').disabled = true;
+  $('btnDisconnect').disabled = false;
+  $('btnRestart').disabled = false;
+  setStatus('Connected. The Arduino restarts and measures the anchors first; positions appear after a few seconds.');
+  resetClock();
+  keepReading = true;
+  readDone = readLoop();
+}
+
+async function readLoop() {
+  while (port && port.readable && keepReading) {
+    const decoder = new TextDecoderStream();
+    const pipe = port.readable.pipeTo(decoder.writable).catch(() => {});
+    reader = decoder.readable.getReader();
+    let buf = '';
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const at = Date.now();
+        buf += value;
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          handleLine(buf.slice(0, i), at);
+          buf = buf.slice(i + 1);
+        }
+      }
+    } catch (e) {
+      if (keepReading) setStatus('Connection problem: ' + e.message, true);
+    } finally {
+      reader.releaseLock();
+    }
+    await pipe;
+  }
+}
+
+async function disconnect() {
+  keepReading = false;
+  try { if (reader) await reader.cancel(); } catch (e) {}
+  try { if (readDone) await readDone; } catch (e) {}
+  try { if (port) await port.close(); } catch (e) {}
+  port = null;
+  $('btnConnect').disabled = false;
+  $('btnDisconnect').disabled = true;
+  $('btnRestart').disabled = true;
+  setStatus('Disconnected.');
+}
+
+async function restartArduino() {
+  if (!port) return;
+  try {
+    anchors.clear();
+    tags.clear();
+    $('tagTable').innerHTML = '<div class="empty">No tag positions yet.</div>';
+    $('anchorTable').innerHTML = '<div class="empty">No anchors yet. They appear after calibration.</div>';
+    await port.setSignals({ dataTerminalReady: false });
+    await new Promise(r => setTimeout(r, 150));
+    await port.setSignals({ dataTerminalReady: true });
+    resetClock();
+    setStatus('Arduino restarted. Measuring the anchors again…');
+    scheduleDraw();
+  } catch (e) {
+    setStatus('Could not restart: ' + e.message + '. Press the red reset button on the Arduino instead.', true);
+  }
+}
+
+/* ---------- demo ---------- */
+function startDemo() {
+  if (port || replay.active) return;
+  anchors.clear(); tags.clear();
+  resetClock();
+  handleLine('ANCHOR,6A01,0,0,2000');
+  handleLine('ANCHOR,6A02,4200,0,800');
+  handleLine('ANCHOR,6A03,600,3400,2200');
+  handleLine('ANCHOR,6A04,4000,3600,500');
+  let t = 0;
+  const demoStart = performance.now();
+  demoTimer = setInterval(() => {
+    t += 0.05;
+    const x = 1900 + 1100 * Math.cos(t) + (Math.random() - 0.5) * 80;
+    const y = 1600 + 900 * Math.sin(1.3 * t) + (Math.random() - 0.5) * 80;
+    const z = 1100 + 400 * Math.sin(0.7 * t) + (Math.random() - 0.5) * 60;
+    const ms = Math.round(performance.now() - demoStart);
+    handleLine(`CLOCK,${ms}`);
+    handleLine(`POS,6A12,${Math.round(x)},${Math.round(y)},${Math.round(z)},${ms}`);
+    if (Math.random() < 0.03) handleLine(`ERR,6A12,${ms}`);
+  }, 100);
+  $('btnDemo').textContent = 'Stop demo';
+  setStatus('Demo mode: made-up data, no Arduino needed.');
+}
+function stopDemo() {
+  if (!demoTimer) return;
+  clearInterval(demoTimer);
+  demoTimer = null;
+  $('btnDemo').textContent = 'Demo';
+  anchors.clear(); tags.clear();
+  $('tagTable').innerHTML = '<div class="empty">No tag positions yet.</div>';
+  $('anchorTable').innerHTML = '<div class="empty">No anchors yet. They appear after calibration.</div>';
+  setStatus('Not connected.');
+  scheduleDraw();
+}
+
+$('btnConnect').onclick = connect;
+$('btnDisconnect').onclick = disconnect;
+$('btnRestart').onclick = restartArduino;
+$('btnDemo').onclick = () => (demoTimer ? stopDemo() : startDemo());
+$('btnClear').onclick = () => { for (const t of tags.values()) { t.trail = []; } scheduleDraw(); };
+$('chkTrail').onchange = scheduleDraw;
+$('btnView').onclick = () => setView(viewMode === '3d' ? 'top' : '3d');
+
+$('btnRec').onclick = () => (rec.on ? stopRec() : startRec());
+$('btnSaveJson').onclick = saveJson;
+$('btnSaveCsv').onclick = saveCsv;
+$('btnOpen').onclick = () => $('fileOpen').click();
+$('fileOpen').onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  try {
+    const data = parseRecording(await f.text(), f.name);
+    if (!data.samples.length) throw new Error('no positions in file');
+    startReplay(data, f.name);
+  } catch (err) {
+    setStatus(`Could not open "${f.name}": ${err.message}`, true);
+  }
+};
+$('btnPlay').onclick = () => {
+  if (!replay.active) return;
+  if (!replay.playing && replay.t >= replay.data.duration) seekTo(0);
+  replay.playing = !replay.playing;
+  replay.lastFrame = performance.now();
+  updateReplayUI();
+};
+$('seek').addEventListener('input', () => { seeking = true; seekTo(+$('seek').value / 1000); updateReplayUI(); });
+$('seek').addEventListener('change', () => { seeking = false; });
+$('btnExitReplay').onclick = exitReplay;
+updateRecUI();
+
+setView('3d');
+</script>
+</body>
+</html>
