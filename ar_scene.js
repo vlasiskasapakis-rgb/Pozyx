@@ -152,3 +152,38 @@ export function centreIsOn(target, anchorGroup, camera) {
   }
   return true;
 }
+
+// A flat picture of a poster with one mode's items drawn on it (like the AR editor), for the live map.
+// 3D models are shown as labelled boxes standing on their point.
+export function posterView(target, overlays, fileUrl) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:relative; width:100%; overflow:hidden; border-radius:6px; line-height:0';
+  const img = document.createElement('img');
+  img.src = fileUrl(target.image_path);
+  img.alt = target.name;
+  img.style.cssText = 'display:block; width:100%; height:auto';
+  wrap.appendChild(img);
+  for (const ov of overlays) {
+    const el = document.createElement('div');
+    el.style.cssText = `position:absolute; left:${ov.x * 100}%; top:${ov.y * 100}%; width:${ov.size * 100}%;` +
+      `transform:${ov.kind === 'model' ? 'translate(-50%, -100%)' : 'translate(-50%, -50%)'} rotate(${-(+ov.rot_z || 0)}deg);` +
+      `transform-origin:${ov.kind === 'model' ? '50% 100%' : '50% 50%'}`;
+    if (ov.kind === 'text') {
+      const c = textCanvas(ov);
+      c.style.cssText = 'display:block; width:100%; height:auto';
+      el.appendChild(c);
+    } else if (ov.kind === 'image') {
+      const i = document.createElement('img');
+      i.src = fileUrl(ov.asset_path);
+      i.alt = '';
+      i.style.cssText = 'display:block; width:100%; height:auto';
+      el.appendChild(i);
+    } else {
+      el.style.cssText += 'aspect-ratio:1; border:2px dashed #fff; background:rgba(24,95,165,.35); color:#fff; display:flex;' +
+        'align-items:center; justify-content:center; text-align:center; font:600 11px/1.2 system-ui, sans-serif; padding:2px; text-shadow:0 1px 2px #000';
+      el.textContent = '3D · ' + (ov.asset_name || 'model');
+    }
+    wrap.appendChild(el);
+  }
+  return wrap;
+}

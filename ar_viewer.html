@@ -237,6 +237,28 @@ function renderRecent() {
     `<li><span>${esc(r.name)}${r.mode === 'ai' ? ' · AI' : ''}</span><span class="d">${hms(r.start)} · ${(r.ms / 1000).toFixed(1)} s</span></li>`).join('');
 }
 
+/* ---------- live view for the laptop ---------- */
+// The live map shows what this phone is pointing at right now (table ar_live, one row per phone).
+const DEVICE = (() => {
+  try { let d = localStorage.getItem('arviewer.device'); if (!d) { d = newId(); localStorage.setItem('arviewer.device', d); } return d; }
+  catch (e) { return newId(); }
+})();
+let liveKey = '', liveAt = 0;
+function reportLive(force) {
+  if (!hasDb() || !published) return;
+  const target = look ? targetsById.get(published.target_ids[look.idx]) : null;
+  const key = `${target ? target.id : ''}|${mode}|${current}`;
+  const t = now();
+  if (!force && key === liveKey && t - liveAt < 5000) return;   // on every change, and every 5 s
+  liveKey = key;
+  liveAt = t;
+  db.upsert('ar_live', [{
+    device_id: DEVICE, session_id: current || null, session_name: current ? nameOf(current) : null,
+    target_id: target ? target.id : null, target_name: target ? target.name : null, mode,
+    since_unix_ms: look ? Math.round(look.start) : null, updated_at_unix_ms: Math.round(t),
+  }], 'device_id', { keepalive: true }).catch(() => {});
+}
+
 /* ---------- content mode ---------- */
 function setMode(m) {
   if (look && m !== mode) { finishLook(look, now()); look = null; }   // a look belongs to one mode
@@ -305,12 +327,14 @@ async function startAR() {
     const clock = new THREE.Clock();
     let uiAt = 0;
     renderer.setAnimationLoop(() => {
+      if (document.visibilityState === 'hidden') return;   // page in the background: no looks
       const dt = clock.getDelta();
       for (const m of mixers) m.update(dt);
       scene.updateMatrixWorld();
       let pointed = null;
       for (const i of found) if (centreIsOn(anchors[i].target, anchors[i].anchor.group, camera)) { pointed = i; break; }
       updateLook(pointed);
+      reportLive();
       renderer.render(scene, camera);
       const t = performance.now();
       if (t - uiAt > 100) { uiAt = t; renderLookNow(); }
@@ -348,7 +372,7 @@ document.querySelector('.seg').onclick = (e) => { const b = e.target.closest('bu
 $('btnRefresh').onclick = () => loadSessions(true);
 $('session').onchange = () => { current = $('session').value; saveLocal(); renderStatus(); };
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') { if (look) { finishLook(look, look.last); look = null; } send(); }
+  if (document.visibilityState === 'hidden') { if (look) { finishLook(look, look.last); look = null; } reportLive(true); send(); }
   else { keepAwake(); send(); loadSessions(); syncClock(); }
 });
 window.addEventListener('online', send);

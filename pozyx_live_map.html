@@ -4,17 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pozyx Live Map</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
 <style>
   :root {
     --bg: #f6f5f1; --panel: #ffffff; --text: #1f1e1b; --muted: #6b6a64;
     --border: #dedcd4; --grid: #ebe9e2; --grid-strong: #d3d1c7;
-    --accent: #0f6e56; --accent-text: #ffffff; --anchor: #1d9e75; --danger: #a32d2d; --tap: #b4531a;
+    --accent: #0f6e56; --accent-text: #ffffff; --anchor: #1d9e75; --danger: #a32d2d; --tap: #b4531a; --ai: #534ab7;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #1b1b19; --panel: #242422; --text: #ecebe6; --muted: #a3a29b;
       --border: #3a3936; --grid: #2c2c2a; --grid-strong: #444441;
-      --accent: #5dcaa5; --accent-text: #04342c; --anchor: #5dcaa5; --danger: #f09595; --tap: #f0a868;
+      --accent: #5dcaa5; --accent-text: #04342c; --anchor: #5dcaa5; --danger: #f09595; --tap: #f0a868; --ai: #afa9ec;
     }
   }
   * { box-sizing: border-box; }
@@ -58,6 +64,16 @@
   .mapcard { position: relative; }
   .lookmarks { position: absolute; left: 8px; right: 8px; bottom: -9px; height: 6px; }
   .lookmarks button { position: absolute; top: 0; height: 6px; min-width: 3px; padding: 0; border: 0; border-radius: 3px; background: var(--tap); opacity: .55; cursor: pointer; }
+  .lookmarks button.ai { background: var(--ai); }
+  .modechip { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1.5px solid var(--tap); color: var(--tap); white-space: nowrap; }
+  .modechip.ai { border-color: var(--ai); color: var(--ai); }
+  .modechip:empty { display: none; }
+  .viewmeta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; margin-bottom: 8px; }
+  .viewposter { background: var(--grid); border-radius: 8px; min-height: 40px; }
+  .legend { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 8px; vertical-align: -1px; background: var(--tap); }
+  .legend i.ai { background: var(--ai); }
+  .looknow.ai { border-color: var(--ai); color: var(--ai); }
   .looknow { position: absolute; top: 56px; left: 50%; transform: translateX(-50%); border: 2px solid var(--tap); background: var(--panel); color: var(--tap); padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; pointer-events: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
   #looksTable tr { cursor: pointer; }
   #looksTable tr:hover td { background: var(--grid); }
@@ -135,12 +151,17 @@
     </div>
   </div>
   <div class="side">
+    <div class="card" id="viewCard" hidden>
+      <h2 id="viewTitle">Visitor is viewing</h2>
+      <div class="viewmeta"><span id="viewMode" class="modechip"></span><span id="viewText"></span></div>
+      <div id="viewPoster" class="viewposter"></div>
+    </div>
     <div class="card" id="tapsCard" hidden>
       <h2>Phone taps</h2>
       <div id="tapsTable"></div>
     </div>
     <div class="card" id="looksCard" hidden>
-      <h2>Looks (AR viewer)</h2>
+      <h2>Looks (AR viewer)<span class="legend"><i></i>Generic<i class="ai"></i>AI assisted</span></h2>
       <div id="looksTable"></div>
     </div>
     <div class="card">
@@ -574,6 +595,7 @@ function startReplay(data, name) {
   if (rec.on) stopRec();
   stopDemo();
   replay.active = true;
+  showViewing(null);   // the live view is replaced by the replay's
   replay.data = data;
   replay.name = name;
   anchors.clear();
@@ -652,6 +674,7 @@ function updateReplayUI() {
 }
 
 function exitReplay() {
+  showViewing(null);
   replay.active = false;
   replay.playing = false;
   $('replayBar').hidden = true;
@@ -714,7 +737,7 @@ function prepareLooks(data, shift) {
   $('lookMarks').innerHTML = looks.map((lk, i) => {
     if (lk.outside) return '';
     const a = Math.max(0, lk.a / dur), b = Math.min(1, lk.b / dur);
-    return `<button style="left:${(a * 100).toFixed(3)}%; width:${((b - a) * 100).toFixed(3)}%" data-i="${i}" title="${esc(lk.name)}${lk.mode ? ' · ' + esc(lk.mode) : ''} · ${(lk.b - lk.a).toFixed(1)} s" aria-label="Jump to look ${i + 1}"></button>`;
+    return `<button class="${lk.modeKey === 'ai' ? 'ai' : ''}" style="left:${(a * 100).toFixed(3)}%; width:${((b - a) * 100).toFixed(3)}%" data-i="${i}" title="${esc(lk.name)}${lk.mode ? ' · ' + esc(lk.mode) : ''} · ${(lk.b - lk.a).toFixed(1)} s" aria-label="Jump to look ${i + 1}"></button>`;
   }).join('');
   $('looksCard').hidden = !data.looks;
   let h = '';
@@ -723,7 +746,7 @@ function prepareLooks(data, shift) {
     h = '<table><tr><th>Image</th><th>Mode</th><th>Start</th><th>t (s)</th><th>Length</th><th>Note</th></tr>';
     looks.forEach((lk, i) => {
       const note = lk.outside || (lk.other ? `session: ${lk.other}` : '');
-      h += `<tr${lk.outside ? ' class="outside"' : ` data-i="${i}"`}><td>${esc(lk.name)}</td><td>${esc(lk.mode)}</td><td class="num">${clockTime(lk.unix).slice(0, 8)}</td>` +
+      h += `<tr${lk.outside ? ' class="outside"' : ` data-i="${i}"`}><td>${esc(lk.name)}</td><td><span class="modechip ${lk.modeKey}">${esc(lk.mode)}</span></td><td class="num">${clockTime(lk.unix).slice(0, 8)}</td>` +
         `<td class="num">${lk.a.toFixed(2)}</td><td class="num">${(lk.b - lk.a).toFixed(1)} s</td><td class="note">${esc(note)}</td></tr>`;
     });
     h += '</table>';
@@ -741,8 +764,67 @@ function renderLookNow() {
   const looks = (replay.active && replay.data.looks) || [];
   const lk = looks.find(l => !l.outside && replay.t >= l.a && replay.t <= l.b);
   $('lookNow').hidden = !lk;
-  if (lk) $('lookNow').textContent = `Looking at ${lk.name}${lk.mode ? ` (${lk.mode})` : ''} · ${(replay.t - lk.a).toFixed(1)} / ${(lk.b - lk.a).toFixed(1)} s`;
+  if (lk) {
+    $('lookNow').textContent = `Looking at ${lk.name}${lk.mode ? ` (${lk.mode})` : ''} · ${(replay.t - lk.a).toFixed(1)} / ${(lk.b - lk.a).toFixed(1)} s`;
+    $('lookNow').className = 'looknow' + (lk.modeKey === 'ai' ? ' ai' : '');
+  }
+  if (!replay.active || !replay.data.looks) return;
+  showViewing(lk
+    ? { title: 'Visitor was viewing', target_id: lk.target_id, target_name: lk.name, mode: lk.modeKey, text: `${lk.name} · ${(replay.t - lk.a).toFixed(1)} / ${(lk.b - lk.a).toFixed(1)} s` }
+    : { title: 'Visitor was viewing', target_id: null, mode: null, text: 'Not looking at an image right now' });
 }
+/* ---------- the poster a visitor sees (AR) ---------- */
+// Shows the image with the items of the mode the phone showed, live (from ar_live) or in a replay.
+const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
+let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
+async function loadArContent() {
+  if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
+  try {
+    arMod = arMod || await import('./ar_scene.js');
+    const [targets, overlays] = await Promise.all([pozyxDb.request('ar_targets?select=*'), pozyxDb.request('ar_overlays?select=*')]);
+    arContent = { targets: new Map(targets.map(t => [t.id, t])), overlays };
+    arLoadedAt = Date.now();
+  } catch (e) { /* no AR tables yet */ }
+  return arContent;
+}
+async function showViewing(v) {
+  if (!v) { $('viewCard').hidden = true; viewKey = ''; return; }
+  $('viewCard').hidden = false;
+  $('viewTitle').textContent = v.title;
+  $('viewMode').textContent = v.mode ? MODE_NAMES[v.mode] || v.mode : '';
+  $('viewMode').className = 'modechip ' + (v.mode || '');
+  $('viewText').textContent = v.text;
+  const key = `${v.target_id || ''}|${v.mode || ''}`;
+  if (key === viewKey) return;
+  viewKey = key;
+  if (!v.target_id) { $('viewPoster').innerHTML = ''; return; }
+  const c = await loadArContent();
+  if (key !== viewKey) return;   // something newer is being shown
+  const t = c && c.targets.get(v.target_id);
+  if (!t) { $('viewPoster').innerHTML = `<div class="empty" style="padding:10px">${esc(v.target_name || 'This image')} is no longer in the AR editor.</div>`; return; }
+  const items = c.overlays.filter(o => o.target_id === t.id && (o.mode || 'generic') === (v.mode || 'generic'));
+  $('viewPoster').innerHTML = '';
+  $('viewPoster').appendChild(arMod.posterView(t, items, (p) => pozyxDb.fileUrl(p)));
+}
+
+// Live: what the phone points at right now (it reports every change, and every 5 s)
+async function pollLive() {
+  if (!hasDb() || replay.active || document.hidden) return;
+  let rows;
+  try {
+    const serverNow = Date.now() + (clockFix ? clockFix.offset : 0);
+    rows = await pozyxDb.request(`ar_live?select=*&updated_at_unix_ms=gte.${Math.round(serverNow - 20000)}&order=updated_at_unix_ms.desc`);
+  } catch (e) { return; }   // no ar_live table yet
+  if (replay.active) return;
+  const r = rows.find(x => sessionId && x.session_id === sessionId) || rows[0];   // prefer the selected session
+  if (!r) { showViewing(null); return; }
+  const where = r.session_name ? ` · session "${r.session_name}"` : '';
+  if (!r.target_id) { showViewing({ title: 'Visitor now', target_id: null, mode: r.mode, text: `Not looking at an image${where}` }); return; }
+  const secs = Math.max(0, (Date.now() + (clockFix ? clockFix.offset : 0) - r.since_unix_ms) / 1000);
+  showViewing({ title: 'Visitor is viewing', target_id: r.target_id, target_name: r.target_name, mode: r.mode, text: `${r.target_name} · ${secs.toFixed(0)} s${where}` });
+}
+setInterval(pollLive, 1000);
+
 function tapText(tp) { return `${tp.label ? tp.label + ' · ' : ''}${clockTime(tp.unix_ms)}`; }
 function renderTapTable() {
   const taps = (replay.data && replay.data.taps) || [];
@@ -887,7 +969,8 @@ async function replayFromDb(r) {
       })),
       looks: lookRows && lookRows.length ? lookRows.map(lk => ({
         a0: (+lk.start_unix_ms - start) / 1000, b0: (+lk.end_unix_ms - start) / 1000, unix: +lk.start_unix_ms,
-        name: lk.target_name || 'image', mode: lk.mode === 'ai' ? 'AI assisted' : lk.mode === 'generic' ? 'Generic' : '', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
+        name: lk.target_name || 'image', target_id: lk.target_id, modeKey: lk.mode || 'generic',
+        mode: lk.mode === 'ai' ? 'AI assisted' : lk.mode === 'generic' ? 'Generic' : '', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
       })) : null,
     };
     startReplay(data, `${sesName} · ${clockTime(start).slice(0, 8)}`);

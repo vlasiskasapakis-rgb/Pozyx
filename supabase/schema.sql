@@ -215,3 +215,22 @@ alter table ar_overlays add column if not exists mode text not null default 'gen
 alter table ar_overlays drop constraint if exists ar_overlays_mode_check;
 alter table ar_overlays add constraint ar_overlays_mode_check check (mode in ('generic', 'ai'));
 alter table looks add column if not exists mode text;   -- the mode the phone showed during the look
+
+-- What each phone is pointing at right now (one row per phone), for the live map.
+create table if not exists ar_live (
+  device_id          text primary key,
+  session_id         text,
+  session_name       text,
+  target_id          text,                          -- empty when not looking at an image
+  target_name        text,
+  mode               text,
+  since_unix_ms      bigint,                        -- when the current look started
+  updated_at_unix_ms bigint not null
+);
+alter table ar_live enable row level security;
+drop policy if exists "pages read"   on ar_live;
+drop policy if exists "pages add"    on ar_live;
+drop policy if exists "pages update" on ar_live;
+create policy "pages read"   on ar_live for select to anon using (true);
+create policy "pages add"    on ar_live for insert to anon with check (true);
+create policy "pages update" on ar_live for update to anon using (true) with check (true);

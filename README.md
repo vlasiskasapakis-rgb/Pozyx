@@ -132,7 +132,15 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
    on a poster, that counts as a look; glances under 0.3 s are ignored.
 3. Each look is saved with start, end, length and mode, on the server clock,
    under the chosen session. Switching mode during a look ends it and starts a
-   new one, so every look has one mode. Replays in the live map show looks as bars under the
+   new one, so every look has one mode.
+
+**Seeing what visitors see (live map)**
+- Live: the "Visitor is viewing" box shows the poster the phone points at right
+  now, drawn with the items of the mode it shows (Generic or AI assisted), how
+  long, and the session. The phone reports this to the `ar_live` table on every
+  change and every 5 s; the live map checks it every second.
+- Replay: the same box shows what was being viewed at each moment. Look bars
+  and the Looks list are coloured by mode (orange Generic, purple AI assisted). Replays in the live map show looks as bars under the
    timeline and in a "Looks" list.
 
 ## Syncing tips
