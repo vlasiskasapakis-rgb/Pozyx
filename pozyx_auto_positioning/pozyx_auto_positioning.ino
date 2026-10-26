@@ -71,7 +71,7 @@ bool track_local = false;
 
 // Seconds to wait before the anchors measure each other, so you can leave the room
 // (people near the anchors block the signal and spoil the calibration). 0 = no wait.
-const uint16_t calibration_delay_s = 15;
+const uint16_t calibration_delay_s = 5;
 
 // How many distance measurements to average per direction for each pair
 const uint8_t samples_per_direction = 10;
