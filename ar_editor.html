@@ -56,6 +56,12 @@
   /* stage */
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
   .toolbar input[type=text] { font: inherit; font-size: 15px; font-weight: 600; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); flex: 1; min-width: 160px; }
+  .modes { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 8px 16px; background: var(--panel); }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--select); color: var(--panel); font-weight: 600; }
+  .modes .hint { margin: 0; }
   .stagewrap { background: var(--grid); border-radius: 8px; padding: 12px; display: flex; justify-content: center; overflow: hidden; }
   #stage { position: relative; display: inline-block; max-width: 100%; touch-action: none; user-select: none; }
   #stageImg { display: block; max-width: 100%; max-height: 68vh; border-radius: 2px; }
@@ -97,6 +103,14 @@
   </aside>
 
   <section class="card">
+    <div class="modes">
+      <div class="seg" role="group" aria-label="Content mode">
+        <button id="modeGeneric" data-mode="generic" aria-pressed="true">Generic</button>
+        <button id="modeAi" data-mode="ai" aria-pressed="false">AI assisted</button>
+      </div>
+      <button id="btnCopyMode" title="Copies every item from the other mode into this one">Copy items from AI assisted</button>
+      <p class="hint" id="modeHint">Visitors who pick Generic on the phone see these items.</p>
+    </div>
     <div class="toolbar">
       <input type="text" id="targetName" aria-label="Image name" placeholder="Image name">
       <button id="btnAddText">Add text</button>
@@ -140,7 +154,12 @@ let targets = [];                 // ar_targets rows
 const overlaysBy = new Map();     // target id -> ar_overlays rows
 let published = null;             // ar_published row
 let selTarget = null, selOverlay = null;
-let pickMode = 'add';             // the file picker adds a new item or replaces the selected item's file
+let pickMode = 'add';
+// Content mode being edited: each image has its own items for 'generic' and 'ai' (AI assisted)
+const MODES = { generic: 'Generic', ai: 'AI assisted' };
+let mode = (() => { try { return localStorage.getItem('areditor.mode') === 'ai' ? 'ai' : 'generic'; } catch (e) { return 'generic'; } })();
+const modeOf = (o) => o.mode || 'generic';
+const itemsOf = (tid, m = mode) => (overlaysBy.get(tid) || []).filter(o => modeOf(o) === m);             // the file picker adds a new item or replaces the selected item's file
 
 function setStatus(text, isErr) { $('status').textContent = text; $('status').classList.toggle('err', !!isErr); }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -180,10 +199,10 @@ async function loadAll() {
 /* ---------- images (targets) ---------- */
 function renderTargetList() {
   $('targetList').innerHTML = targets.length ? targets.map(t => {
-    const n = (overlaysBy.get(t.id) || []).length;
+    const g = itemsOf(t.id, 'generic').length, a = itemsOf(t.id, 'ai').length;
     return `<button class="titem${selTarget && selTarget.id === t.id ? ' sel' : ''}" data-id="${esc(t.id)}">
       <img src="${esc(fileUrl(t.image_path))}" alt="">
-      <span><span class="tname">${esc(t.name)}</span><br><span class="tmeta">${n} item${n === 1 ? '' : 's'}</span></span></button>`;
+      <span><span class="tname">${esc(t.name)}</span><br><span class="tmeta">Generic ${g} · AI ${a}</span></span></button>`;
   }).join('') : '<div class="empty">No images yet.</div>';
 }
 
@@ -194,6 +213,7 @@ function selectTarget(id) {
   const has = !!selTarget;
   for (const b of ['btnAddText', 'btnAddImage', 'btnAddModel', 'btnDelTarget', 'targetName']) $(b).disabled = !has;
   $('targetName').value = has ? selTarget.name : '';
+  renderModeButtons();
   $('stageImg').src = has ? fileUrl(selTarget.image_path) : '';
   $('stageImg').hidden = !has;
   renderStage();
@@ -305,7 +325,7 @@ function renderStage() {
   const layer = $('ovLayer');
   if (!selTarget) { layer.innerHTML = '<div class="empty" style="position:static;padding:40px">Upload an image to start.</div>'; return; }
   layer.innerHTML = '';
-  for (const ov of overlaysBy.get(selTarget.id) || []) layer.appendChild(ovElement(ov));
+  for (const ov of itemsOf(selTarget.id)) layer.appendChild(ovElement(ov));
 }
 
 function ovElement(ov) {
@@ -351,8 +371,8 @@ async function addOverlay(kind, file) {
   if (!selTarget) return;
   const ov = {
     // new items start near the middle, a little apart so they do not cover each other
-    id: 'o_' + newId(), target_id: selTarget.id, kind,
-    x: 0.5 + 0.1 * (((overlaysBy.get(selTarget.id) || []).length % 5) - 2), y: 0.5, z: kind === 'model' ? 0 : 0.02,
+    id: 'o_' + newId(), target_id: selTarget.id, kind, mode,
+    x: 0.5 + 0.1 * ((itemsOf(selTarget.id).length % 5) - 2), y: 0.5, z: kind === 'model' ? 0 : 0.02,
     size: kind === 'text' ? 0.4 : 0.3, rot_x: 0, rot_y: 0, rot_z: 0,
     text: kind === 'text' ? 'Your text' : null, color: '#ffffff', background: '#000000cc', asset_path: null, asset_name: null,
   };
@@ -366,11 +386,12 @@ async function addOverlay(kind, file) {
     ov.updated_at_unix_ms = Date.now();
     await db.upsert('ar_overlays', [ov], 'id');
   } catch (e) {
-    setStatus(`Could not add: ${e.message}`, true);
+    setStatus(/mode/.test(e.message) ? 'Run the updated supabase/schema.sql in Supabase to turn on modes.' : `Could not add: ${e.message}`, true);
     return;
   }
   overlaysBy.get(selTarget.id).push(ov);
   renderTargetList();
+  renderModeButtons();
   selectOverlay(ov);
   schedulePreview();
   setStatus('Added. Drag it into place.');
@@ -386,7 +407,7 @@ async function replaceAsset(file) {
     ov.asset_name = file.name;
     await db.uploadFile(ov.asset_path, file, ov.kind === 'model' ? 'model/gltf-binary' : file.type);
     saveOverlay(ov, true);
-    if (oldPath) db.removeFiles([oldPath]).catch(() => {});
+    if (fileUnused(oldPath, ov)) db.removeFiles([oldPath]).catch(() => {});
   } catch (e) {
     ov.asset_path = oldPath;
     setStatus(`Could not replace the file: ${e.message}`, true);
@@ -402,7 +423,7 @@ async function deleteOverlay() {
   if (!ov || !confirm('Delete this item?')) return;
   try {
     await db.remove('ar_overlays', 'id', ov.id);
-    if (ov.asset_path) db.removeFiles([ov.asset_path]).catch(() => {});
+    if (fileUnused(ov.asset_path, ov)) db.removeFiles([ov.asset_path]).catch(() => {});
   } catch (e) {
     setStatus(`Could not delete: ${e.message}`, true);
     return;
@@ -411,9 +432,54 @@ async function deleteOverlay() {
   list.splice(list.indexOf(ov), 1);
   selOverlay = null;
   renderTargetList();
+  renderModeButtons();
   renderStage();
   renderProps();
   schedulePreview();
+}
+
+// A stored file can be shared by an item and its copy in the other mode
+function fileUnused(path, except) {
+  return !!path && ![...overlaysBy.values()].flat().some(o => o !== except && o.asset_path === path);
+}
+
+/* ---------- modes ---------- */
+function setMode(m) {
+  mode = m;
+  try { localStorage.setItem('areditor.mode', m); } catch (e) {}
+  selOverlay = null;
+  const other = m === 'ai' ? 'generic' : 'ai';
+  $('modeGeneric').setAttribute('aria-pressed', String(m === 'generic'));
+  $('modeAi').setAttribute('aria-pressed', String(m === 'ai'));
+  $('btnCopyMode').textContent = `Copy items from ${MODES[other]}`;
+  $('modeHint').textContent = `Visitors who pick ${MODES[m]} on the phone see these items.`;
+  renderModeButtons();
+  renderStage();
+  renderProps();
+  schedulePreview();
+}
+function renderModeButtons() {
+  const other = mode === 'ai' ? 'generic' : 'ai';
+  $('btnCopyMode').disabled = !selTarget || !itemsOf(selTarget.id, other).length;
+}
+async function copyFromOtherMode() {
+  if (!selTarget) return;
+  const other = mode === 'ai' ? 'generic' : 'ai';
+  const src = itemsOf(selTarget.id, other);
+  if (!src.length || !confirm(`Copy ${src.length} item${src.length === 1 ? '' : 's'} from ${MODES[other]} into ${MODES[mode]}?`)) return;
+  const copies = src.map(o => ({ ...o, id: 'o_' + newId(), mode, updated_at_unix_ms: Date.now() }));
+  try {
+    await db.upsert('ar_overlays', copies, 'id');
+  } catch (e) {
+    setStatus(/mode/.test(e.message) ? 'Run the updated supabase/schema.sql in Supabase to turn on modes.' : `Could not copy: ${e.message}`, true);
+    return;
+  }
+  overlaysBy.get(selTarget.id).push(...copies);
+  renderTargetList();
+  renderStage();
+  renderModeButtons();
+  schedulePreview();
+  setStatus(`Copied ${copies.length} item${copies.length === 1 ? '' : 's'} into ${MODES[mode]}. Change them as you like; the originals stay as they are.`);
 }
 
 /* ---------- properties panel ---------- */
@@ -525,7 +591,7 @@ async function buildPreview() {
   const group = new THREE.Group();
   if (t) {
     group.add(await imagePlane(t, fileUrl(t.image_path)).catch(() => new THREE.Group()));
-    group.add(await buildTargetGroup(t, overlaysBy.get(t.id) || [], fileUrl));
+    group.add(await buildTargetGroup(t, itemsOf(t.id), fileUrl));
   }
   if (run !== previewRun) return;   // a newer change is being built
   if (content) scene.remove(content);
@@ -555,12 +621,16 @@ $('targetName').addEventListener('input', renameTarget);
 $('btnDelTarget').onclick = deleteTarget;
 $('btnPublish').onclick = publish;
 $('btnAddText').onclick = () => addOverlay('text');
+$('modeGeneric').onclick = () => setMode('generic');
+$('modeAi').onclick = () => setMode('ai');
+$('btnCopyMode').onclick = copyFromOtherMode;
 $('btnAddImage').onclick = () => { pickMode = 'add'; $('fileImage').click(); };
 $('btnAddModel').onclick = () => { pickMode = 'add'; $('fileModel').click(); };
 $('fileImage').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) (pickMode === 'replace' ? replaceAsset(f) : addOverlay('image', f)); };
 $('fileModel').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) (pickMode === 'replace' ? replaceAsset(f) : addOverlay('model', f)); };
 window.addEventListener('resize', () => renderStage());
 
+setMode(mode);
 loadAll();
 </script>
 </body>

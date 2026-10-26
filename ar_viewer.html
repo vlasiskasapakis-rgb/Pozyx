@@ -26,6 +26,10 @@
   .bar { display: flex; gap: 8px; }
   select, button { font: inherit; font-size: 15px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .25); background: var(--glass); color: var(--text); padding: 9px 12px; backdrop-filter: blur(6px); }
   select { flex: 1; min-width: 0; }
+  .seg { display: flex; border: 1px solid rgba(255, 255, 255, .25); border-radius: 10px; overflow: hidden; background: var(--glass); backdrop-filter: blur(6px); }
+  .seg button { flex: 1; border: 0; border-radius: 0; background: none; backdrop-filter: none; padding: 9px 10px; }
+  .seg button + button { border-left: 1px solid rgba(255, 255, 255, .25); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #04342c; font-weight: 600; }
   .status { font-size: 12px; color: var(--muted); background: var(--glass); border-radius: 8px; padding: 5px 9px; align-self: flex-start; max-width: 100%; }
   .status.ok::before, .status.wait::before { content: "● "; }
   .status.ok::before { color: var(--accent); }
@@ -58,6 +62,10 @@
       <select id="session" aria-label="Session"></select>
       <button id="btnRefresh" title="Load sessions created on the laptop">Refresh</button>
     </div>
+    <div class="seg" role="group" aria-label="Content">
+      <button data-mode="generic" aria-pressed="true">Generic</button>
+      <button data-mode="ai" aria-pressed="false">AI assisted</button>
+    </div>
     <div id="status" class="status">Starting…</div>
   </div>
   <div class="bottom" id="bottom" hidden>
@@ -88,6 +96,9 @@ const GRACE_MS = 400;      // a look survives the image being lost for this long
 
 let published = null, targetsById = new Map(), overlaysBy = new Map();
 let dbSessions = [], current = '', outbox = [], recent = [], clockFix = null;
+let mode = 'generic';                       // which content visitors see: 'generic' or 'ai' (AI assisted)
+const MODES = { generic: 'Generic', ai: 'AI assisted' };
+const modeGroups = [];                      // {mode, group} for every image, to show one mode at a time
 let sending = false, retrying = false, retryTimer = null, problem = '';
 
 const hasDb = () => !!(db && db.configured());
@@ -107,10 +118,11 @@ function loadLocal() {
     outbox = s.outbox || [];
     recent = s.recent || [];
     if (s.clockFix && Number.isFinite(s.clockFix.offset)) clockFix = s.clockFix;
+    if (s.mode === 'ai' || s.mode === 'generic') mode = s.mode;
   } catch (e) {}
 }
 function saveLocal() {
-  try { localStorage.setItem(KEY, JSON.stringify({ dbSessions, current, outbox, recent: recent.slice(0, 20), clockFix })); } catch (e) {}
+  try { localStorage.setItem(KEY, JSON.stringify({ dbSessions, current, outbox, recent: recent.slice(0, 20), clockFix, mode })); } catch (e) {}
 }
 
 /* ---------- sessions (created in the Pozyx live map) ---------- */
@@ -203,17 +215,17 @@ function updateLook(idx) {
   if (look && idx === look.idx) { look.last = t; return; }
   if (look && idx !== null) { finishLook(look, t); look = null; }            // moved straight to another image
   else if (look && t - look.last > GRACE_MS) { finishLook(look, look.last); look = null; }
-  if (!look && idx !== null) look = { idx, start: t, last: t };
+  if (!look && idx !== null) look = { idx, start: t, last: t, mode };
 }
 function finishLook(l, end) {
   if (end - l.start < MIN_LOOK_MS) return;
   const target = targetsById.get(published.target_ids[l.idx]);
   const row = {
     id: newId(), session_id: current || null, session_name: current ? nameOf(current) : null,
-    target_id: target.id, target_name: target.name, start_unix_ms: Math.round(l.start), end_unix_ms: Math.round(end),
+    target_id: target.id, target_name: target.name, mode: l.mode, start_unix_ms: Math.round(l.start), end_unix_ms: Math.round(end),
     clock_offset_ms: clockFix ? Math.round(clockFix.offset) : null,
   };
-  recent.unshift({ name: target.name, start: row.start_unix_ms, ms: row.end_unix_ms - row.start_unix_ms });
+  recent.unshift({ name: target.name, mode: l.mode, start: row.start_unix_ms, ms: row.end_unix_ms - row.start_unix_ms });
   recent = recent.slice(0, 20);
   if (hasDb()) outbox.push(row);
   saveLocal();
@@ -222,7 +234,16 @@ function finishLook(l, end) {
 }
 function renderRecent() {
   $('recent').innerHTML = recent.slice(0, 4).map(r =>
-    `<li><span>${esc(r.name)}</span><span class="d">${hms(r.start)} · ${(r.ms / 1000).toFixed(1)} s</span></li>`).join('');
+    `<li><span>${esc(r.name)}${r.mode === 'ai' ? ' · AI' : ''}</span><span class="d">${hms(r.start)} · ${(r.ms / 1000).toFixed(1)} s</span></li>`).join('');
+}
+
+/* ---------- content mode ---------- */
+function setMode(m) {
+  if (look && m !== mode) { finishLook(look, now()); look = null; }   // a look belongs to one mode
+  mode = m;
+  for (const x of modeGroups) x.group.visible = x.mode === mode;
+  document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+  saveLocal();
 }
 
 /* ---------- AR ---------- */
@@ -264,10 +285,15 @@ async function startAR() {
       if (!target) continue;   // deleted after publishing
       const anchor = mind.addAnchor(i);
       anchors[i] = { anchor, target };
-      buildTargetGroup(target, overlaysBy.get(target.id) || [], (p) => db.fileUrl(p)).then(g => {
-        anchor.group.add(g);
-        mixers = mixers.concat(mixersIn(g));
-      });
+      for (const m of Object.keys(MODES)) {   // both sets of content; only the chosen mode is visible
+        const items = (overlaysBy.get(target.id) || []).filter(o => (o.mode || 'generic') === m);
+        buildTargetGroup(target, items, (p) => db.fileUrl(p)).then(g => {
+          g.visible = m === mode;
+          modeGroups.push({ mode: m, group: g });
+          anchor.group.add(g);
+          mixers = mixers.concat(mixersIn(g));
+        });
+      }
       anchor.onTargetFound = () => found.add(i);
       anchor.onTargetLost = () => found.delete(i);
     }
@@ -318,6 +344,7 @@ async function keepAwake() {
 
 /* ---------- wiring ---------- */
 $('btnStart').onclick = startAR;
+document.querySelector('.seg').onclick = (e) => { const b = e.target.closest('button[data-mode]'); if (b) setMode(b.dataset.mode); };
 $('btnRefresh').onclick = () => loadSessions(true);
 $('session').onchange = () => { current = $('session').value; saveLocal(); renderStatus(); };
 document.addEventListener('visibilitychange', () => {
@@ -328,6 +355,7 @@ window.addEventListener('online', send);
 window.addEventListener('pagehide', send);
 
 loadLocal();
+setMode(mode);
 renderSessions();
 renderRecent();
 renderStatus();

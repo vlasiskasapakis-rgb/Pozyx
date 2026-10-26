@@ -114,7 +114,10 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
 1. **Upload images**: the posters as printed. Recognition works best with
    detailed, high-contrast pictures (photos, illustrations), not plain shapes
    or mostly text.
-2. Pick an image, then **Add text**, **Add image** or **Add 3D model**
+2. Pick an image and a mode: **Generic** or **AI assisted**. Each mode has
+   its own items; **Copy items from …** copies the other mode's items as a
+   starting point.
+   Then **Add text**, **Add image** or **Add 3D model**
    (`.glb`, or a `.gltf` with everything embedded). Drag items into place and
    use the panel on the right for size, height above the poster and rotation.
    The 3D preview shows how it will look on the phone. Changes save by themselves.
@@ -122,11 +125,14 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
    needed after only moving or editing items).
 
 **Viewer (phone)**: `ar_viewer.html`
-1. Pick the session at the top (**Refresh** loads new ones), then **Start camera**.
+1. Pick the session at the top (**Refresh** loads new ones) and the content
+   mode (**Generic** or **AI assisted**; it can be switched any time), then
+   **Start camera**.
 2. Point the circle in the middle of the screen at a poster. While it stays
    on a poster, that counts as a look; glances under 0.3 s are ignored.
-3. Each look is saved with start, end and length, on the server clock, under
-   the chosen session. Replays in the live map show looks as bars under the
+3. Each look is saved with start, end, length and mode, on the server clock,
+   under the chosen session. Switching mode during a look ends it and starts a
+   new one, so every look has one mode. Replays in the live map show looks as bars under the
    timeline and in a "Looks" list.
 
 ## Syncing tips

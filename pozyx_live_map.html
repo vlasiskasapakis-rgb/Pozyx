@@ -714,16 +714,16 @@ function prepareLooks(data, shift) {
   $('lookMarks').innerHTML = looks.map((lk, i) => {
     if (lk.outside) return '';
     const a = Math.max(0, lk.a / dur), b = Math.min(1, lk.b / dur);
-    return `<button style="left:${(a * 100).toFixed(3)}%; width:${((b - a) * 100).toFixed(3)}%" data-i="${i}" title="${esc(lk.name)} · ${(lk.b - lk.a).toFixed(1)} s" aria-label="Jump to look ${i + 1}"></button>`;
+    return `<button style="left:${(a * 100).toFixed(3)}%; width:${((b - a) * 100).toFixed(3)}%" data-i="${i}" title="${esc(lk.name)}${lk.mode ? ' · ' + esc(lk.mode) : ''} · ${(lk.b - lk.a).toFixed(1)} s" aria-label="Jump to look ${i + 1}"></button>`;
   }).join('');
   $('looksCard').hidden = !data.looks;
   let h = '';
   if (!looks.length) h = '<div class="empty">No looks during this recording.</div>';
   else {
-    h = '<table><tr><th>Image</th><th>Start</th><th>t (s)</th><th>Length</th><th>Note</th></tr>';
+    h = '<table><tr><th>Image</th><th>Mode</th><th>Start</th><th>t (s)</th><th>Length</th><th>Note</th></tr>';
     looks.forEach((lk, i) => {
       const note = lk.outside || (lk.other ? `session: ${lk.other}` : '');
-      h += `<tr${lk.outside ? ' class="outside"' : ` data-i="${i}"`}><td>${esc(lk.name)}</td><td class="num">${clockTime(lk.unix).slice(0, 8)}</td>` +
+      h += `<tr${lk.outside ? ' class="outside"' : ` data-i="${i}"`}><td>${esc(lk.name)}</td><td>${esc(lk.mode)}</td><td class="num">${clockTime(lk.unix).slice(0, 8)}</td>` +
         `<td class="num">${lk.a.toFixed(2)}</td><td class="num">${(lk.b - lk.a).toFixed(1)} s</td><td class="note">${esc(note)}</td></tr>`;
     });
     h += '</table>';
@@ -741,7 +741,7 @@ function renderLookNow() {
   const looks = (replay.active && replay.data.looks) || [];
   const lk = looks.find(l => !l.outside && replay.t >= l.a && replay.t <= l.b);
   $('lookNow').hidden = !lk;
-  if (lk) $('lookNow').textContent = `Looking at ${lk.name} · ${(replay.t - lk.a).toFixed(1)} / ${(lk.b - lk.a).toFixed(1)} s`;
+  if (lk) $('lookNow').textContent = `Looking at ${lk.name}${lk.mode ? ` (${lk.mode})` : ''} · ${(replay.t - lk.a).toFixed(1)} / ${(lk.b - lk.a).toFixed(1)} s`;
 }
 function tapText(tp) { return `${tp.label ? tp.label + ' · ' : ''}${clockTime(tp.unix_ms)}`; }
 function renderTapTable() {
@@ -871,7 +871,7 @@ async function replayFromDb(r) {
     const tapRows = await pozyxDb.request(`taps?select=unix_ms,label,session_id,session_name&unix_ms=gte.${start - 60000}&unix_ms=lte.${Math.ceil(end) + 60000}&order=unix_ms.asc`);
     let lookRows = [];
     try {   // looks from the AR viewer that overlap the recording (any session)
-      lookRows = await pozyxDb.request(`looks?select=target_name,start_unix_ms,end_unix_ms,session_id,session_name&end_unix_ms=gte.${start - 60000}&start_unix_ms=lte.${Math.ceil(end) + 60000}&order=start_unix_ms.asc`);
+      lookRows = await pozyxDb.request(`looks?select=*&end_unix_ms=gte.${start - 60000}&start_unix_ms=lte.${Math.ceil(end) + 60000}&order=start_unix_ms.asc`);
     } catch (e) { lookRows = null; }   // no looks table yet
     const samples = pos.map(q => ({ t: (+q.unix_ms - start) / 1000, id: String(q.tag).toUpperCase(), x: +q.x, y: +q.y, z: +q.z }))
       .filter(q => [q.t, q.x, q.y, q.z].every(Number.isFinite)).sort((a, b) => a.t - b.t);
@@ -887,7 +887,7 @@ async function replayFromDb(r) {
       })),
       looks: lookRows && lookRows.length ? lookRows.map(lk => ({
         a0: (+lk.start_unix_ms - start) / 1000, b0: (+lk.end_unix_ms - start) / 1000, unix: +lk.start_unix_ms,
-        name: lk.target_name || 'image', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
+        name: lk.target_name || 'image', mode: lk.mode === 'ai' ? 'AI assisted' : lk.mode === 'generic' ? 'Generic' : '', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
       })) : null,
     };
     startReplay(data, `${sesName} · ${clockTime(start).slice(0, 8)}`);

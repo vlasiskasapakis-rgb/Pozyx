@@ -209,3 +209,9 @@ create policy "ar read"   on storage.objects for select to anon using (bucket_id
 create policy "ar add"    on storage.objects for insert to anon with check (bucket_id = 'ar');
 create policy "ar update" on storage.objects for update to anon using (bucket_id = 'ar') with check (bucket_id = 'ar');
 create policy "ar delete" on storage.objects for delete to anon using (bucket_id = 'ar');
+
+-- Content modes: every image has a Generic and an AI assisted set of items; the phone picks one.
+alter table ar_overlays add column if not exists mode text not null default 'generic';
+alter table ar_overlays drop constraint if exists ar_overlays_mode_check;
+alter table ar_overlays add constraint ar_overlays_mode_check check (mode in ('generic', 'ai'));
+alter table looks add column if not exists mode text;   -- the mode the phone showed during the look
