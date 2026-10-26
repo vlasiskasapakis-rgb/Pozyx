@@ -94,6 +94,16 @@ const KEY = 'arviewer.v1';
 const MIN_LOOK_MS = 300;   // shorter glances are not saved
 const GRACE_MS = 400;      // a look survives the image being lost for this long (tracking flicker)
 
+// Tracking settings (MindAR). Defaults: maxTrack 1 here (MindAR 1), filterMinCF 0.001,
+// filterBeta 1000, warmupTolerance 5, missTolerance 5.
+const TRACKING = {
+  maxTrack: 1,            // posters tracked at once; 1 is the smoothest
+  filterMinCF: 0.005,     // smoothing when still: higher = follows faster but shakes more (MindAR 0.001)
+  filterBeta: 3000,       // smoothing when moving: higher = less trailing behind (MindAR 1000)
+  warmupTolerance: 3,     // frames a poster must be seen before content appears (MindAR 5)
+  missTolerance: 5,       // frames a poster may be missed before content disappears
+};
+
 let published = null, targetsById = new Map(), overlaysBy = new Map();
 let dbSessions = [], current = '', outbox = [], recent = [], clockFix = null;
 let mode = 'generic';                       // which content visitors see: 'generic' or 'ai' (AI assisted)
@@ -295,7 +305,7 @@ async function startAR() {
   $('startInfo').textContent = 'Starting the camera…';
   try {
     const mind = new MindARThree({
-      container: $('ar'), imageTargetSrc: db.fileUrl(published.mind_path), maxTrack: 2,
+      container: $('ar'), imageTargetSrc: db.fileUrl(published.mind_path), ...TRACKING,
       uiLoading: 'no', uiScanning: 'no', uiError: 'no',
     });
     const { renderer, scene, camera } = mind;
