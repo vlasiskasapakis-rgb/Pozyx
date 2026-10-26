@@ -11,6 +11,8 @@
 
   How to use:
     - Place 3 or 4 anchors around the room, powered on.
+    - After a reset there is a countdown (calibration_delay_s) so you can
+      leave the room before the anchors measure each other.
     - Fill in the anchor IDs and their heights below.
     - Upload, open the Serial Monitor at 115200 baud.
     - Press the red reset button on the Arduino to calibrate again
@@ -67,6 +69,10 @@ uint16_t tags[] = {0x6a77};
 // false = the Arduino board only acts as the "master" next to your laptop.
 bool track_local = false;
 
+// Seconds to wait before the anchors measure each other, so you can leave the room
+// (people near the anchors block the signal and spoil the calibration). 0 = no wait.
+const uint16_t calibration_delay_s = 15;
+
 // How many distance measurements to average per direction for each pair
 const uint8_t samples_per_direction = 10;
 
@@ -93,6 +99,16 @@ void setup() {
   dimension = (num_anchors >= 4) ? POZYX_3D : POZYX_2_5D;
 
   Serial.println(F("------------POZYX AUTO POSITIONING------------"));
+  if (calibration_delay_s > 0) {
+    Serial.print(F("Leave the room now: measuring the anchors in "));
+    Serial.print(calibration_delay_s);
+    Serial.println(F(" s"));
+    for (uint16_t s = calibration_delay_s; s > 0; s--) {
+      Serial.print(F("  "));
+      Serial.println(s);
+      delay(1000);
+    }
+  }
   Serial.println(F("Step 1: measuring distances between anchors..."));
 
   for (uint8_t i = 0; i < num_anchors; i++) {
