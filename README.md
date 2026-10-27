@@ -114,6 +114,10 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
 1. **Upload images**: the posters as printed. Recognition works best with
    detailed, high-contrast pictures (photos, illustrations), not plain shapes
    or mostly text.
+   Each image is checked as a marker after upload: a score (0-100, Excellent
+   to Unusable) from its feature points (detail, tracking, spread over the
+   image, and what is left from far away), with tips to improve it.
+   **Show feature points** draws the points and tints areas without detail.
 2. Pick an image and a mode: **Generic** or **AI assisted**. Each mode has
    its own items; **Copy items from …** copies the other mode's items as a
    starting point.

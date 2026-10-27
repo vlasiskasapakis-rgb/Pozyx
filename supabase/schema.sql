@@ -239,3 +239,6 @@ create policy "pages update" on ar_live for update to anon using (true) with che
 alter table ar_overlays drop constraint if exists ar_overlays_kind_check;
 alter table ar_overlays add constraint ar_overlays_kind_check check (kind in ('text', 'image', 'model', 'audio', 'video'));
 alter table ar_overlays add column if not exists loop_play boolean not null default false;   -- start again at the end
+
+-- Marker quality of each image (score, parts, tips and feature points), measured by the AR editor
+alter table ar_targets add column if not exists quality jsonb;

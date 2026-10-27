@@ -24,6 +24,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
   header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
   h1 { font-size: 18px; font-weight: 600; margin: 0 auto 0 0; }
@@ -52,6 +53,23 @@
   .titem img { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; background: var(--grid); }
   .titem .tname { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .titem .tmeta { font-size: 12px; color: var(--muted); }
+  .qbadge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .q5, .q4 { color: var(--accent); } .q3 { color: var(--warn); } .q2, .q1 { color: var(--danger); } .q0 { color: var(--muted); }
+  .quality { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; font-size: 14px; }
+  .qhead { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .qhead .stars { font-size: 18px; letter-spacing: 1px; }
+  .qhead .score { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .qhead .grow { flex: 1; }
+  .qhead label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .qparts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+  .qpart { font-size: 12px; color: var(--muted); }
+  .qpart .bar { height: 6px; border-radius: 3px; background: var(--grid); margin-top: 4px; overflow: hidden; }
+  .qpart .bar i { display: block; height: 100%; border-radius: 3px; }
+  .qtips { margin: 10px 0 0; padding-left: 18px; font-size: 13px; }
+  .qtips li + li { margin-top: 3px; }
+  #qLayer { position: absolute; inset: 0; pointer-events: none; display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); }
+  #qLayer .cell.empty { background: rgba(208, 64, 64, .28); outline: 1px dashed rgba(208, 64, 64, .8); outline-offset: -1px; }
+  #qLayer .dot { position: absolute; width: 5px; height: 5px; margin: -2.5px 0 0 -2.5px; border-radius: 50%; background: #ffe14d; box-shadow: 0 0 0 1px rgba(0, 0, 0, .7); }
 
   /* stage */
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
@@ -125,7 +143,8 @@
       <button id="btnAddVideo">Add video</button>
       <button id="btnDelTarget" class="danger">Delete image</button>
     </div>
-    <div class="stagewrap"><div id="stage"><img id="stageImg" alt=""><div id="ovLayer"></div></div></div>
+    <div id="quality" class="quality" hidden></div>
+    <div class="stagewrap"><div id="stage"><img id="stageImg" alt=""><div id="qLayer" hidden></div><div id="ovLayer"></div></div></div>
     <p class="hint">Drag items to move them. The dot marks the point they are placed on (3D models stand on it). Click an item to change it on the right.</p>
   </section>
 
@@ -204,6 +223,7 @@ async function loadAll() {
   setStatus(targets.length ? `${targets.length} image${targets.length === 1 ? '' : 's'}.` : 'Upload the images (posters) the phone should recognise.');
   selectTarget(targets[0] ? targets[0].id : null);
   renderPublishState();
+  checkMissingQuality();
 }
 
 /* ---------- images (targets) ---------- */
@@ -212,7 +232,7 @@ function renderTargetList() {
     const g = itemsOf(t.id, 'generic').length, a = itemsOf(t.id, 'ai').length;
     return `<button class="titem${selTarget && selTarget.id === t.id ? ' sel' : ''}" data-id="${esc(t.id)}">
       <img src="${esc(fileUrl(t.image_path))}" alt="">
-      <span><span class="tname">${esc(t.name)}</span><br><span class="tmeta">Generic ${g} · AI ${a}</span></span></button>`;
+      <span><span class="tname">${esc(t.name)}</span><br><span class="tmeta">Generic ${g} · AI ${a}</span><br>${qualityBadge(t)}</span></button>`;
   }).join('') : '<div class="empty">No images yet.</div>';
 }
 
@@ -224,6 +244,7 @@ function selectTarget(id) {
   for (const b of ['btnAddText', 'btnAddImage', 'btnAddModel', 'btnAddAudio', 'btnAddVideo', 'btnDelTarget', 'targetName']) $(b).disabled = !has;
   $('targetName').value = has ? selTarget.name : '';
   renderModeButtons();
+  renderQuality();
   $('stageImg').src = has ? fileUrl(selTarget.image_path) : '';
   $('stageImg').hidden = !has;
   renderStage();
@@ -261,6 +282,7 @@ async function addImages(files) {
   }
   if (last) selectTarget(last);
   renderPublishState();
+  checkMissingQuality();
   setStatus(`Uploaded ${files.length} image${files.length === 1 ? '' : 's'}. Click "Publish to phone" when your images are ready.`);
 }
 
@@ -290,6 +312,126 @@ async function deleteTarget() {
   } catch (e) {
     setStatus(`Could not delete: ${e.message}`, true);
   }
+}
+
+/* ---------- marker quality ---------- */
+// MindAR's own preparation finds the feature points it recognises and follows an image by.
+// The score (0-100) combines: detail (points overall), tracking (points used to follow the image),
+// spread (how evenly they cover it, 4x4 grid) and distance (points left when the image is small).
+const LEVELS = [[80, 5, 'Excellent'], [65, 4, 'Good'], [45, 3, 'OK'], [25, 2, 'Poor'], [0, 1, 'Unusable']];
+const levelOf = (score) => LEVELS.find(([min]) => score >= min);
+let showPoints = (() => { try { return localStorage.getItem('areditor.points') === '1'; } catch (e) { return false; } })();
+let checking = null;      // id of the image being checked
+const checkQueue = [];
+
+function qualityBadge(t) {
+  if (checking === t.id) return '<span class="qbadge q0">Checking…</span>';
+  if (!t.quality) return '<span class="qbadge q0">Not checked</span>';
+  const [, stars, name] = levelOf(t.quality.score);
+  return `<span class="qbadge q${stars}">${name} · ${t.quality.score}</span>`;
+}
+
+function scoreQuality(d, t) {
+  const m0 = d.matchingData[0];
+  const pts = m0.maximaPoints.concat(m0.minimaPoints);
+  const far = d.matchingData.find(m => m.scale <= 0.3) || d.matchingData[d.matchingData.length - 1];
+  const farN = far.maximaPoints.length + far.minimaPoints.length;
+  const trk = d.trackingData[0] ? d.trackingData[0].points.length : 0;
+  const cells = new Array(16).fill(0);   // row by row, top-left first
+  for (const q of pts) cells[Math.min(3, Math.floor(q.x / m0.width * 4)) + 4 * Math.min(3, Math.floor(q.y / m0.height * 4))]++;
+  const covered = cells.filter(n => n >= 2).length;
+  const c01 = (v) => Math.max(0, Math.min(1, v));
+  const parts = { detail: c01(pts.length / 400), tracking: c01(trk / 50), spread: covered / 16, distance: c01(farN / 120) };
+  const score = Math.round(100 * (0.25 * parts.detail + 0.3 * parts.tracking + 0.3 * parts.spread + 0.15 * parts.distance));
+  const tips = [];
+  if (!pts.length) tips.push('No usable detail was found: the phone will not recognise this image. Use a photo or illustration with lots of detail and contrast.');
+  else {
+    if (parts.detail < 0.6) tips.push('Few details: add texture, photos or patterns, and avoid large plain areas.');
+    const halves = { left: [0, 1, 4, 5, 8, 9, 12, 13], right: [2, 3, 6, 7, 10, 11, 14, 15], top: [0, 1, 2, 3, 4, 5, 6, 7], bottom: [8, 9, 10, 11, 12, 13, 14, 15] };
+    const weak = Object.keys(halves).filter(h => halves[h].filter(i => cells[i] >= 2).length <= 3);
+    if (parts.spread < 0.75) tips.push(`Details are bunched together${weak.length ? ` (little on the ${weak.join(' and ')})` : ''}: tracking breaks when that part is covered or out of view. Spread detail across the whole image.`);
+    if (parts.tracking < 0.6) tips.push('Little for tracking to hold on to: content may shake or drop out when the phone moves. More sharp corners and high-contrast edges help.');
+    if (parts.distance < 0.6) tips.push('Weak from far away: the detail is fine or small. Bigger shapes, and printing the poster larger, help recognition from a distance.');
+    if (Math.max(t.width_px, t.height_px) < 800) tips.push('The image is small: upload a version at least 1000 px wide.');
+  }
+  if (!tips.length) tips.push('Good marker: plenty of detail, evenly spread. Print it matte and well lit.');
+  const r3 = (v) => Math.round(v * 1000) / 1000;
+  return {
+    score, parts, tips, cells,
+    counts: { points: pts.length, tracking: trk, far: farN, cells: covered },
+    points: pts.slice(0, 800).map(q => [r3(q.x / m0.width), r3(q.y / m0.height)]),
+    checked_at: Date.now(),
+  };
+}
+
+async function checkQuality(t) {
+  checking = t.id;
+  renderTargetList();
+  if (selTarget === t) renderQuality();
+  try {
+    setStatus(`Checking how well "${t.name}" works as a marker…`);
+    const { Compiler } = await import(MINDAR);
+    const img = await loadImg(fileUrl(t.image_path), true);
+    const data = await new Compiler().compileImageTargets([img], () => {});
+    t.quality = scoreQuality(data[0], t);
+    await db.upsert('ar_targets', [t], 'id');
+    setStatus(`"${t.name}" as a marker: ${levelOf(t.quality.score)[2]} (${t.quality.score}/100).`);
+  } catch (e) {
+    setStatus(/quality/.test(e.message) ? 'Run the updated supabase/schema.sql in Supabase to save marker quality.' : `Could not check "${t.name}": ${e.message}`, true);
+  }
+  checking = null;
+  renderTargetList();
+  if (selTarget === t) renderQuality();
+}
+async function runChecks() {
+  if (checking) return;
+  while (checkQueue.length) {
+    const t = checkQueue.shift();
+    if (targets.includes(t)) await checkQuality(t);
+  }
+}
+function checkMissingQuality() {
+  for (const t of targets) if (!t.quality && !checkQueue.includes(t)) checkQueue.push(t);
+  runChecks();
+}
+
+function renderQuality() {
+  const t = selTarget, el = $('quality');
+  el.hidden = !t;
+  $('qLayer').hidden = true;
+  if (!t) return;
+  if (checking === t.id || !t.quality) {
+    el.innerHTML = `<div class="qhead"><b>Marker quality</b><span class="score">${checking === t.id ? 'Checking… (a few seconds)' : 'Not checked yet'}</span>
+      <span class="grow"></span><button id="btnRecheck"${checking ? ' disabled' : ''}>Check now</button></div>`;
+    return;
+  }
+  const q = t.quality, [, stars, name] = levelOf(q.score);
+  const part = (key, label, help) => {
+    const v = q.parts[key], col = v >= 0.75 ? 'var(--accent)' : v >= 0.45 ? 'var(--warn)' : 'var(--danger)';
+    return `<div class="qpart" title="${help}">${label} ${Math.round(v * 100)}%<div class="bar"><i style="width:${Math.round(v * 100)}%; background:${col}"></i></div></div>`;
+  };
+  el.innerHTML = `<div class="qhead"><b>Marker quality</b>
+      <span class="stars q${stars}">${'★'.repeat(stars)}${'☆'.repeat(5 - stars)}</span><b class="q${stars}">${name}</b><span class="score">${q.score}/100</span>
+      <span class="grow"></span>
+      <label><input type="checkbox" id="chkPoints"${showPoints ? ' checked' : ''}> Show feature points</label>
+      <button id="btnRecheck"${checking ? ' disabled' : ''}>Check again</button></div>
+    <div class="qparts">
+      ${part('detail', 'Detail', `${q.counts.points} feature points (400+ is plenty)`)}
+      ${part('tracking', 'Tracking', `${q.counts.tracking} tracking points (50+ is plenty)`)}
+      ${part('spread', 'Spread', `${q.counts.cells} of 16 areas have detail`)}
+      ${part('distance', 'Distance', `${q.counts.far} points left at a quarter of the size (120+ is plenty)`)}
+    </div>
+    <ul class="qtips">${q.tips.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+  renderPoints();
+}
+// Feature points as dots; areas without detail tinted red
+function renderPoints() {
+  const t = selTarget, layer = $('qLayer');
+  layer.hidden = !(showPoints && t && t.quality);
+  if (layer.hidden) return;
+  const q = t.quality;
+  layer.innerHTML = q.cells.map(n => `<div class="cell${n < 2 ? ' empty' : ''}"></div>`).join('') +
+    q.points.map(([x, y]) => `<span class="dot" style="left:${x * 100}%; top:${y * 100}%"></span>`).join('');
 }
 
 /* ---------- publishing the recognition file ---------- */
@@ -648,6 +790,15 @@ $('targetList').onclick = (e) => { const b = e.target.closest('.titem'); if (b) 
 $('targetName').addEventListener('input', renameTarget);
 $('btnDelTarget').onclick = deleteTarget;
 $('btnPublish').onclick = publish;
+$('quality').addEventListener('click', (e) => {
+  if (e.target.id === 'btnRecheck' && selTarget && !checking) checkQuality(selTarget);
+});
+$('quality').addEventListener('change', (e) => {
+  if (e.target.id !== 'chkPoints') return;
+  showPoints = e.target.checked;
+  try { localStorage.setItem('areditor.points', showPoints ? '1' : '0'); } catch (err) {}
+  renderPoints();
+});
 $('btnAddText').onclick = () => addOverlay('text');
 $('modeGeneric').onclick = () => setMode('generic');
 $('modeAi').onclick = () => setMode('ai');
