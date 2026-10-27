@@ -121,6 +121,10 @@ const TRACKING = {
 // Drawing resolution: MindAR draws at the screen's full pixel density (often 3x on phones), which
 // competes with image recognition on the graphics chip. 1.5x looks almost the same and tracks faster.
 const MAX_PIXEL_RATIO = 1.5;
+// Gliding: MindAR updates a poster's position ~10-15 times a second, the screen 60 times. Content
+// glides toward each new position instead of jumping. Seconds to cover most of the way
+// (higher = smoother but trails more; 0 = no gliding).
+const GLIDE_S = 0.07;
 
 let published = null, targetsById = new Map(), overlaysBy = new Map();
 let dbSessions = [], current = '', outbox = [], recent = [], clockFix = null;
@@ -330,6 +334,29 @@ function renderPlayer() {
   $('pTime').textContent = `${fmt(m.el.currentTime)} / ${fmt(d)}`;
 }
 
+/* ---------- gliding ---------- */
+const gPos = new THREE.Vector3(), gRot = new THREE.Quaternion(), gScale = new THREE.Vector3();
+let arAnchors = [];
+function glide(dt) {
+  const k = GLIDE_S > 0 ? 1 - Math.exp(-dt / GLIDE_S) : 1;   // the same feel at any frame rate
+  for (const a of arAnchors) {
+    if (!a) continue;
+    if (!a.anchor.group.visible) { a.follower.visible = false; a.placed = false; continue; }
+    a.anchor.group.matrixWorld.decompose(gPos, gRot, gScale);
+    if (!a.placed) {   // just found: appear in place, no sliding in from the last spot
+      a.follower.position.copy(gPos);
+      a.follower.quaternion.copy(gRot);
+      a.follower.scale.copy(gScale);
+      a.placed = true;
+    } else {
+      a.follower.position.lerp(gPos, k);
+      a.follower.quaternion.slerp(gRot, k);
+      a.follower.scale.lerp(gScale, k);
+    }
+    a.follower.visible = true;
+  }
+}
+
 /* ---------- content mode ---------- */
 function setMode(m) {
   if (look && m !== mode) { finishLook(look, now()); look = null; }   // a look belongs to one mode
@@ -379,13 +406,17 @@ async function startAR() {
       const target = targetsById.get(published.target_ids[i]);
       if (!target) continue;   // deleted after publishing
       const anchor = mind.addAnchor(i);
-      anchors[i] = { anchor, target };
+      // the content sits in its own group that glides after MindAR's anchor (see glide())
+      const follower = new THREE.Group();
+      follower.visible = false;
+      scene.add(follower);
+      anchors[i] = { anchor, target, follower, placed: false };
       for (const m of Object.keys(MODES)) {   // both sets of content; only the chosen mode is visible
         const items = (overlaysBy.get(target.id) || []).filter(o => (o.mode || 'generic') === m);
         buildTargetGroup(target, items, (p) => db.fileUrl(p)).then(g => {
           g.visible = m === mode;
           modeGroups.push({ mode: m, group: g });
-          anchor.group.add(g);
+          follower.add(g);
           mixers = mixers.concat(mixersIn(g));
           media.push(...mediaIn(g));
         });
@@ -393,6 +424,7 @@ async function startAR() {
       anchor.onTargetFound = () => found.add(i);
       anchor.onTargetLost = () => found.delete(i);
     }
+    arAnchors = anchors;
     await mind.start();
     arCamera = camera;
     $('ar').addEventListener('click', onTap);
@@ -407,6 +439,7 @@ async function startAR() {
       const dt = clock.getDelta();
       for (const m of mixers) m.update(dt);
       scene.updateMatrixWorld();
+      glide(dt);
       let pointed = null;
       for (const i of found) if (centreIsOn(anchors[i].target, anchors[i].anchor.group, camera)) { pointed = i; break; }
       updateLook(pointed);
