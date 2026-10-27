@@ -11,6 +11,7 @@ other apps.
 | `sync_marker.html` | Phone page: tap a big button to log the exact time of an event. |
 | `ar_editor.html` | Laptop page: upload poster images and place text, images and 3D models on them. |
 | `ar_viewer.html` | Phone page: shows those overlays on the posters through the camera (AR) and records which poster you look at, and for how long. |
+| `unity/PozyxReplay.cs` | Unity script: replays an exported session and turns looked-at images green (see `unity/README.md`). |
 | `ar_scene.js` | Shared code that builds the AR overlays (used by the editor preview and the viewer). |
 
 ## 1. Arduino sketch
@@ -89,7 +90,10 @@ Both pages save to a Supabase database set in `pozyx_db.js`.
    timeline, in a "Phone taps" list (click one to jump there), as a flash
    while playing, and as diamonds on the map where the tag was at each tap.
 
-6. To clean up: in **Saved sessions**, **Delete** removes one recording;
+6. **Export JSON** (next to a recording, or in the replay bar) downloads the
+   recording for Unity: positions at a fixed height (**Height in export**,
+   default 1 m), anchors, looks and taps. See `unity/README.md`.
+7. To clean up: in **Saved sessions**, **Delete** removes one recording;
    **Delete session** removes the session with all its recordings,
    positions and phone taps. Both ask first and cannot be undone.
 

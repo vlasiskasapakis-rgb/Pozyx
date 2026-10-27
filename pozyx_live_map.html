@@ -147,6 +147,7 @@
       <label id="tapShiftWrap" hidden title="Moves all phone taps and looks later (+) or earlier (−), for recordings made before clock sync">Phone time shift
         <input type="number" id="tapShift" step="0.1" value="0" style="width:72px; font:inherit; font-size:14px; padding:6px; border-radius:8px; border:1px solid var(--border); background:var(--panel); color:var(--text)"> s</label>
       <span id="replayName" class="rname"></span>
+      <button id="btnExportReplay" title="Download this replay as JSON (for Unity), with the phone time shift applied">Export JSON</button>
       <button id="btnExitReplay">Exit replay</button>
     </div>
   </div>
@@ -187,7 +188,11 @@
     <button id="btnDelSession" class="danger" title="Deletes the session with all its recordings and phone taps">Delete session</button>
   </div>
   <div id="dbRecList" class="reclist"></div>
-  <div class="dlgfoot"><button id="btnDbClose">Close</button></div>
+  <div class="dlgfoot" style="justify-content:space-between; align-items:center">
+    <label title="Positions are exported at this height instead of the measured one">Height in export
+      <input type="number" id="exportHeight" step="0.1" value="1" style="width:70px; font:inherit; padding:5px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text)"> m</label>
+    <button id="btnDbClose">Close</button>
+  </div>
 </dialog>
 
 <script src="pozyx_db.js"></script>
@@ -892,6 +897,7 @@ async function loadRecList() {
     const d = new Date(+r.started_at_unix_ms);
     return `<div class="recrow"><span class="when">${d.toLocaleDateString()} ${clockTime(+r.started_at_unix_ms).slice(0, 8)}</span>` +
       `<span class="meta">${(+r.duration_s || 0).toFixed(1)} s</span><button data-i="${i}" class="primary">Replay</button>` +
+      `<button data-exp="${i}" title="Download as JSON (for Unity)">Export JSON</button>` +
       `<button data-del="${i}" class="danger" title="Delete this recording">Delete</button></div>`;
   }).join('');
 }
@@ -933,50 +939,98 @@ async function deleteSession() {
   openDbDialog();
 }
 
+// Loads a recording with its anchors, positions, and the taps and looks around it
+async function loadRecording(r, sid) {
+  const sesName = sid ? (dbSessions.find(x => x.id === sid) || {}).name || sid : 'No session';
+  setStatus('Loading the recording from the database…');
+  const rid = encodeURIComponent(r.id);
+  const start = +r.started_at_unix_ms, end = start + (+r.duration_s || 0) * 1000;
+  const anchorRows = await pozyxDb.request(`anchors?select=anchor_id,x,y,z&recording_id=eq.${rid}`);
+  const pos = [];
+  for (let off = 0; ; off += 1000) {
+    const page = await pozyxDb.request(`positions?select=tag,unix_ms,x,y,z&recording_id=eq.${rid}&order=unix_ms.asc&limit=1000&offset=${off}`);
+    pos.push(...page);
+    if (page.length < 1000) break;
+    setStatus(`Loading the recording from the database… ${pos.length} positions`);
+  }
+  // every tap from 1 minute before to 1 minute after, whatever session the phone had picked
+  const tapRows = await pozyxDb.request(`taps?select=unix_ms,label,session_id,session_name&unix_ms=gte.${start - 60000}&unix_ms=lte.${Math.ceil(end) + 60000}&order=unix_ms.asc`);
+  let lookRows = [];
+  try {   // looks from the AR viewer that overlap the recording (any session)
+    lookRows = await pozyxDb.request(`looks?select=*&end_unix_ms=gte.${start - 60000}&start_unix_ms=lte.${Math.ceil(end) + 60000}&order=start_unix_ms.asc`);
+  } catch (e) { lookRows = null; }   // no looks table yet
+  const samples = pos.map(q => ({ t: (+q.unix_ms - start) / 1000, id: String(q.tag).toUpperCase(), x: +q.x, y: +q.y, z: +q.z }))
+    .filter(q => [q.t, q.x, q.y, q.z].every(Number.isFinite)).sort((a, b) => a.t - b.t);
+  if (!samples.length) throw new Error('this recording has no positions');
+  const data = {
+    anchors: anchorRows.map(a => ({ id: String(a.anchor_id).toUpperCase(), x: +a.x, y: +a.y, z: +a.z })),
+    samples,
+    duration: Math.max(+r.duration_s || 0, samples[samples.length - 1].t),
+    startUnix: start,
+    taps: tapRows.map(tp => ({
+      t: (+tp.unix_ms - start) / 1000, unix_ms: +tp.unix_ms, label: tp.label || '',
+      other: (tp.session_id || '') === sid ? null : (tp.session_name || 'No session'),
+    })),
+    looks: lookRows && lookRows.length ? lookRows.map(lk => ({
+      a0: (+lk.start_unix_ms - start) / 1000, b0: (+lk.end_unix_ms - start) / 1000, unix: +lk.start_unix_ms,
+      name: lk.target_name || 'image', target_id: lk.target_id, modeKey: lk.mode || 'generic',
+      mode: lk.mode === 'ai' ? 'AI assisted' : lk.mode === 'generic' ? 'Generic' : '', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
+    })) : null,
+    meta: { sessionId: sid, sessionName: sesName, recordingId: r.id },
+  };
+  return data;
+}
 async function replayFromDb(r) {
   const sid = $('dbSession').value;
-  const sesName = sid ? (dbSessions.find(x => x.id === sid) || {}).name || sid : 'No session';
   $('dbDialog').close();
-  setStatus('Loading the recording from the database…');
   try {
-    const rid = encodeURIComponent(r.id);
-    const start = +r.started_at_unix_ms, end = start + (+r.duration_s || 0) * 1000;
-    const anchorRows = await pozyxDb.request(`anchors?select=anchor_id,x,y,z&recording_id=eq.${rid}`);
-    const pos = [];
-    for (let off = 0; ; off += 1000) {
-      const page = await pozyxDb.request(`positions?select=tag,unix_ms,x,y,z&recording_id=eq.${rid}&order=unix_ms.asc&limit=1000&offset=${off}`);
-      pos.push(...page);
-      if (page.length < 1000) break;
-      setStatus(`Loading the recording from the database… ${pos.length} positions`);
-    }
-    // every tap from 1 minute before to 1 minute after, whatever session the phone had picked
-    const tapRows = await pozyxDb.request(`taps?select=unix_ms,label,session_id,session_name&unix_ms=gte.${start - 60000}&unix_ms=lte.${Math.ceil(end) + 60000}&order=unix_ms.asc`);
-    let lookRows = [];
-    try {   // looks from the AR viewer that overlap the recording (any session)
-      lookRows = await pozyxDb.request(`looks?select=*&end_unix_ms=gte.${start - 60000}&start_unix_ms=lte.${Math.ceil(end) + 60000}&order=start_unix_ms.asc`);
-    } catch (e) { lookRows = null; }   // no looks table yet
-    const samples = pos.map(q => ({ t: (+q.unix_ms - start) / 1000, id: String(q.tag).toUpperCase(), x: +q.x, y: +q.y, z: +q.z }))
-      .filter(q => [q.t, q.x, q.y, q.z].every(Number.isFinite)).sort((a, b) => a.t - b.t);
-    if (!samples.length) throw new Error('this recording has no positions');
-    const data = {
-      anchors: anchorRows.map(a => ({ id: String(a.anchor_id).toUpperCase(), x: +a.x, y: +a.y, z: +a.z })),
-      samples,
-      duration: Math.max(+r.duration_s || 0, samples[samples.length - 1].t),
-      startUnix: start,
-      taps: tapRows.map(tp => ({
-        t: (+tp.unix_ms - start) / 1000, unix_ms: +tp.unix_ms, label: tp.label || '',
-        other: (tp.session_id || '') === sid ? null : (tp.session_name || 'No session'),
-      })),
-      looks: lookRows && lookRows.length ? lookRows.map(lk => ({
-        a0: (+lk.start_unix_ms - start) / 1000, b0: (+lk.end_unix_ms - start) / 1000, unix: +lk.start_unix_ms,
-        name: lk.target_name || 'image', target_id: lk.target_id, modeKey: lk.mode || 'generic',
-        mode: lk.mode === 'ai' ? 'AI assisted' : lk.mode === 'generic' ? 'Generic' : '', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
-      })) : null,
-    };
-    startReplay(data, `${sesName} · ${clockTime(start).slice(0, 8)}`);
+    const data = await loadRecording(r, sid);
+    startReplay(data, `${data.meta.sessionName} · ${clockTime(data.startUnix).slice(0, 8)}`);
   } catch (e) {
     setStatus(`Could not load the recording: ${e.message}`, true);
   }
+}
+async function exportFromDb(r) {
+  try {
+    exportSession(await loadRecording(r, $('dbSession').value), 0);
+  } catch (e) {
+    setStatus(`Could not export the recording: ${e.message}`, true);
+  }
+}
+
+/* ---------- export for Unity ---------- */
+// One recording as JSON for unity/PozyxReplay.cs. Positions get a fixed height (the tag's measured
+// height is left out); looks and taps are seconds from the recording start, like positions.
+const exportHeight = () => { const v = parseFloat($('exportHeight').value); return Number.isFinite(v) ? v : 1; };
+function exportSession(data, shift) {
+  const r3 = (v) => Math.round(v * 1000) / 1000;
+  const h = exportHeight(), start = data.startUnix || 0, dur = data.duration, meta = data.meta || {};
+  const inside = (a, b) => b >= 0 && a <= dur + 2;
+  const looks = (data.looks || []).map(lk => ({ lk, a: lk.a0 + shift, b: lk.b0 + shift })).filter(x => inside(x.a, x.b));
+  const taps = (data.taps || []).map(tp => ({ tp, t: (tp.t0 !== undefined ? tp.t0 : tp.t) + shift })).filter(x => inside(x.t, x.t));
+  const out = {
+    format: 'pozyx-session',
+    version: 1,
+    units: 'meters, seconds',
+    coordinates: 'Pozyx: x and y along the floor, origin = floor below anchor A1. In Unity use (x, height, y).',
+    fixedHeight: h,
+    phoneTimeShift: shift,
+    session: { id: meta.sessionId || '', name: meta.sessionName || '' },
+    recording: { id: meta.recordingId || replay.name || '', startUnixMs: start, startTime: start ? new Date(start).toISOString() : '', duration: r3(dur) },
+    anchors: data.anchors.map(a => ({ id: a.id, x: r3(a.x), y: r3(a.y), z: r3(a.z) })),
+    tags: [...new Set(data.samples.map(q => q.id))],
+    positions: data.samples.map(q => ({ t: r3(q.t), tag: q.id, x: r3(q.x), y: r3(q.y), z: h, unixMs: start ? Math.round(start + q.t * 1000) : 0 })),
+    looks: looks.map(({ lk, a, b }) => ({
+      start: r3(Math.max(0, a)), end: r3(Math.min(dur, b)), duration: r3(Math.min(dur, b) - Math.max(0, a)),
+      image: lk.name, imageId: lk.target_id || '', mode: lk.modeKey || 'generic', otherSession: lk.other || '',
+      startUnixMs: lk.unix, endUnixMs: Math.round(lk.unix + (lk.b0 - lk.a0) * 1000),
+    })),
+    taps: taps.map(({ tp, t }) => ({ t: r3(t), label: tp.label || '', unixMs: tp.unix_ms || 0 })),
+  };
+  const safe = (v) => String(v).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
+  const name = `${safe(meta.sessionName || 'session')}_${safe(meta.recordingId || 'recording')}.json`;
+  download(name, JSON.stringify(out, null, 1), 'application/json');
+  setStatus(`Exported "${name}": ${out.positions.length} positions, ${out.looks.length} looks, ${out.taps.length} taps, height fixed at ${h} m.`);
 }
 
 /* ---------- drawing ---------- */
@@ -1413,10 +1467,15 @@ $('btnDbClose').onclick = () => $('dbDialog').close();
 $('dbSession').onchange = loadRecList;
 $('dbRecList').onclick = (e) => {
   const b = e.target.closest('button[data-i]'), d = e.target.closest('button[data-del]');
+  const x = e.target.closest('button[data-exp]');
+  if (x) exportFromDb(dbRecs[+x.dataset.exp]);
   if (b) replayFromDb(dbRecs[+b.dataset.i]);
   if (d) deleteRecording(dbRecs[+d.dataset.del]);
 };
 $('btnDelSession').onclick = deleteSession;
+$('btnExportReplay').onclick = () => { if (replay.active) exportSession(replay.data, +$('tapShift').value || 0); };
+try { const h = localStorage.getItem('pozyx.exportHeight'); if (h !== null) $('exportHeight').value = h; } catch (e) {}
+$('exportHeight').addEventListener('input', () => { try { localStorage.setItem('pozyx.exportHeight', $('exportHeight').value); } catch (e) {} });
 $('lookMarks').onclick = (e) => { const b = e.target.closest('button[data-i]'); if (b) jumpToLook(+b.dataset.i); };
 $('looksTable').onclick = (e) => { const r = e.target.closest('tr[data-i]'); if (r) jumpToLook(+r.dataset.i); };
 $('tapMarks').onclick = (e) => { const b = e.target.closest('button[data-i]'); if (b) jumpToTap(+b.dataset.i); };
