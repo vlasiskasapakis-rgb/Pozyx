@@ -113,11 +113,14 @@ const GRACE_MS = 400;      // a look survives the image being lost for this long
 // filterBeta 1000, warmupTolerance 5, missTolerance 5.
 const TRACKING = {
   maxTrack: 1,            // posters tracked at once; 1 is the smoothest
-  filterMinCF: 0.005,     // smoothing when still: higher = follows faster but shakes more (MindAR 0.001)
-  filterBeta: 3000,       // smoothing when moving: higher = less trailing behind (MindAR 1000)
-  warmupTolerance: 3,     // frames a poster must be seen before content appears (MindAR 5)
-  missTolerance: 5,       // frames a poster may be missed before content disappears
+  filterMinCF: 0.01,      // smoothing when still: higher = follows faster but shakes more (MindAR 0.001)
+  filterBeta: 5000,       // smoothing when moving: higher = less trailing behind (MindAR 1000)
+  warmupTolerance: 3,     // tracked frames before content appears (MindAR 5)
+  missTolerance: 2,       // missed frames before content disappears; lower = hides sooner (MindAR 5)
 };
+// Drawing resolution: MindAR draws at the screen's full pixel density (often 3x on phones), which
+// competes with image recognition on the graphics chip. 1.5x looks almost the same and tracks faster.
+const MAX_PIXEL_RATIO = 1.5;
 
 let published = null, targetsById = new Map(), overlaysBy = new Map();
 let dbSessions = [], current = '', outbox = [], recent = [], clockFix = null;
@@ -368,6 +371,7 @@ async function startAR() {
       uiLoading: 'no', uiScanning: 'no', uiError: 'no',
     });
     const { renderer, scene, camera } = mind;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO));
     addLights(scene);
     const found = new Set(), anchors = [];
     let mixers = [];
