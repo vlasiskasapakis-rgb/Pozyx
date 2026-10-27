@@ -41,6 +41,10 @@
   .chip.ok { color: var(--accent); border-color: var(--accent); }
   main { display: grid; grid-template-columns: 220px minmax(0, 1fr) 340px; gap: 16px; padding: 16px; align-items: start; }
   @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  /* side columns stay in view while the image scrolls, each scrolling on its own when long */
+  @media (min-width: 1101px) {
+    .images, .side { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
+  }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 0; }
   .side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   .hint, .empty { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
@@ -120,7 +124,7 @@
 </header>
 
 <main>
-  <aside class="card">
+  <aside class="card images">
     <h2>Images</h2>
     <div id="targetList" class="tlist"></div>
   </aside>
