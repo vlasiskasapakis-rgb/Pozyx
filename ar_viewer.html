@@ -45,6 +45,12 @@
   ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   ol li { background: var(--glass); border-radius: 8px; padding: 5px 10px; font-size: 13px; display: flex; justify-content: space-between; gap: 10px; font-variant-numeric: tabular-nums; }
   ol li .d { color: var(--muted); }
+  .player { background: var(--glass); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; backdrop-filter: blur(6px); }
+  .player .ptitle { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .player .prow { display: flex; align-items: center; gap: 8px; }
+  .player button { padding: 8px 12px; min-width: 64px; }
+  .player input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .player .ptime { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; background: #151513; z-index: 10; }
   .start h1 { margin: 0; font-size: 22px; }
   .start p { margin: 0; color: var(--muted); max-width: 34ch; line-height: 1.45; }
@@ -69,6 +75,15 @@
     <div id="status" class="status">Starting…</div>
   </div>
   <div class="bottom" id="bottom" hidden>
+    <div id="player" class="player" hidden>
+      <div id="pTitle" class="ptitle"></div>
+      <div class="prow">
+        <button id="pPlay">Pause</button>
+        <button id="pStop">Stop</button>
+        <input type="range" id="pSeek" min="0" max="1000" value="0" aria-label="Position">
+        <span id="pTime" class="ptime">0:00 / 0:00</span>
+      </div>
+    </div>
     <div id="lookNow" class="looknow">Point the circle at an image</div>
     <ol id="recent"></ol>
   </div>
@@ -86,7 +101,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { MindARThree } from 'mindar-image-three';
-import { addLights, buildTargetGroup, mixersIn, centreIsOn } from './ar_scene.js';
+import { addLights, buildTargetGroup, mixersIn, centreIsOn, mediaIn } from './ar_scene.js';
 
 const $ = (id) => document.getElementById(id);
 const db = window.pozyxDb;
@@ -269,10 +284,54 @@ function reportLive(force) {
   }], 'device_id', { keepalive: true }).catch(() => {});
 }
 
+/* ---------- audio and video ---------- */
+// Tapping an audio or video item plays it; the player bar controls the one playing.
+const media = [];          // {el, ov, hit, object} for every audio and video item
+let activeMedia = null, arCamera = null, seeking = false;
+const raycaster = new THREE.Raycaster();
+
+function shown(obj) {      // visible on screen: its poster is tracked and its mode is chosen
+  for (let o = obj; o; o = o.parent) if (!o.visible) return false;
+  return true;
+}
+function onTap(e) {
+  if (!arCamera) return;
+  const r = $('ar').getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, arCamera);
+  const items = media.filter(m => shown(m.object));
+  const hits = raycaster.intersectObjects(items.flatMap(m => m.hit), false);
+  if (!hits.length) return;
+  const item = items.find(m => m.hit.includes(hits[0].object));
+  if (item.el.paused) {
+    for (const m of media) if (m !== item) m.el.pause();   // one at a time
+    item.el.play().catch(err => flashStatus(`Could not play: ${err.message}`));
+  } else {
+    item.el.pause();
+  }
+  activeMedia = item;
+  renderPlayer();
+}
+function stopAll() {
+  for (const m of media) m.el.pause();
+}
+const fmt = (sec) => Number.isFinite(sec) ? `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}` : '0:00';
+function renderPlayer() {
+  const m = activeMedia;
+  $('player').hidden = !m;
+  if (!m) return;
+  $('pTitle').textContent = (m.ov.kind === 'video' ? 'Video · ' : 'Audio · ') + (m.ov.text || m.ov.asset_name || '');
+  $('pPlay').textContent = m.el.paused ? 'Play' : 'Pause';
+  const d = m.el.duration;
+  if (!seeking) $('pSeek').value = Number.isFinite(d) && d > 0 ? Math.round(m.el.currentTime / d * 1000) : 0;
+  $('pTime').textContent = `${fmt(m.el.currentTime)} / ${fmt(d)}`;
+}
+
 /* ---------- content mode ---------- */
 function setMode(m) {
   if (look && m !== mode) { finishLook(look, now()); look = null; }   // a look belongs to one mode
   mode = m;
+  stopAll();   // the other mode's audio and video are hidden now
   for (const x of modeGroups) x.group.visible = x.mode === mode;
   document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
   saveLocal();
@@ -324,12 +383,15 @@ async function startAR() {
           modeGroups.push({ mode: m, group: g });
           anchor.group.add(g);
           mixers = mixers.concat(mixersIn(g));
+          media.push(...mediaIn(g));
         });
       }
       anchor.onTargetFound = () => found.add(i);
       anchor.onTargetLost = () => found.delete(i);
     }
     await mind.start();
+    arCamera = camera;
+    $('ar').addEventListener('click', onTap);
     $('startScreen').hidden = true;
     $('cross').hidden = false;
     $('bottom').hidden = false;
@@ -347,9 +409,9 @@ async function startAR() {
       reportLive();
       renderer.render(scene, camera);
       const t = performance.now();
-      if (t - uiAt > 100) { uiAt = t; renderLookNow(); }
+      if (t - uiAt > 100) { uiAt = t; renderLookNow(); renderPlayer(); }
     });
-    window.__ar = { mind, found, anchors, get look() { return look; } };   // for testing
+    window.__ar = { mind, found, anchors, media, get look() { return look; } };   // for testing
   } catch (e) {
     $('startInfo').textContent = `Could not start the camera: ${e.message || e}. Allow camera access for this page and try again.`;
     $('startInfo').className = 'err';
@@ -378,11 +440,30 @@ async function keepAwake() {
 
 /* ---------- wiring ---------- */
 $('btnStart').onclick = startAR;
+$('pPlay').onclick = () => {
+  const m = activeMedia;
+  if (!m) return;
+  if (m.el.paused) { stopAll(); m.el.play().catch(err => flashStatus(`Could not play: ${err.message}`)); } else m.el.pause();
+  renderPlayer();
+};
+$('pStop').onclick = () => {
+  if (!activeMedia) return;
+  activeMedia.el.pause();
+  activeMedia.el.currentTime = 0;
+  activeMedia = null;
+  renderPlayer();
+};
+$('pSeek').addEventListener('input', () => {
+  seeking = true;
+  const m = activeMedia;
+  if (m && Number.isFinite(m.el.duration)) m.el.currentTime = $('pSeek').value / 1000 * m.el.duration;
+});
+$('pSeek').addEventListener('change', () => { seeking = false; });
 document.querySelector('.seg').onclick = (e) => { const b = e.target.closest('button[data-mode]'); if (b) setMode(b.dataset.mode); };
 $('btnRefresh').onclick = () => loadSessions(true);
 $('session').onchange = () => { current = $('session').value; saveLocal(); renderStatus(); };
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') { if (look) { finishLook(look, look.last); look = null; } reportLive(true); send(); }
+  if (document.visibilityState === 'hidden') { stopAll(); if (look) { finishLook(look, look.last); look = null; } reportLive(true); send(); }
   else { keepAwake(); send(); loadSessions(); syncClock(); }
 });
 window.addEventListener('online', send);

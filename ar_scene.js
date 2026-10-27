@@ -65,6 +65,116 @@ function flat(tex, width, ratio) {
   );
 }
 
+// Round play button for an audio item, with its label (also shown in the editor and live map)
+export function audioCanvas(ov, playing) {
+  const S = 256, label = String(ov.text || '').trim();
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const font = `600 60px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  ctx.font = font;
+  const labelW = label ? Math.ceil(ctx.measureText(label).width) + 56 : 0;
+  canvas.width = S + labelW;
+  canvas.height = S;
+  ctx.fillStyle = 'rgba(20, 20, 18, 0.78)';
+  ctx.beginPath();
+  ctx.roundRect(0, 0, canvas.width, S, S / 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(S / 2, S / 2, S * 0.38, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#0f6e56';
+  if (playing) {   // pause bars
+    ctx.fillRect(S * 0.38, S * 0.33, S * 0.09, S * 0.34);
+    ctx.fillRect(S * 0.53, S * 0.33, S * 0.09, S * 0.34);
+  } else {         // play triangle
+    ctx.beginPath();
+    ctx.moveTo(S * 0.42, S * 0.31);
+    ctx.lineTo(S * 0.70, S * 0.5);
+    ctx.lineTo(S * 0.42, S * 0.69);
+    ctx.closePath();
+    ctx.fill();
+  }
+  if (label) {
+    ctx.font = font;
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, S - 8, S / 2);
+  }
+  return canvas;
+}
+
+// Play sign drawn over a paused video
+function playBadgeTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'rgba(20, 20, 18, 0.7)';
+  ctx.beginPath(); ctx.arc(64, 64, 60, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.moveTo(50, 36); ctx.lineTo(94, 64); ctx.lineTo(50, 92); ctx.closePath(); ctx.fill();
+  return new THREE.CanvasTexture(c);
+}
+
+// Audio and video items keep their player in userData.media = {el, ov, hit}, so a page can
+// start them when the visitor taps one (hit = the meshes that react to a tap).
+function audioObject(ov, url) {
+  const audio = new Audio();
+  audio.crossOrigin = 'anonymous';
+  audio.preload = 'metadata';
+  audio.loop = !!ov.loop_play;
+  audio.src = url;
+  const tex = new THREE.CanvasTexture(audioCanvas(ov, false));
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mesh = flat(tex, ov.size, tex.image.height / tex.image.width);
+  const redraw = () => { tex.image = audioCanvas(ov, !audio.paused); tex.needsUpdate = true; };
+  audio.addEventListener('play', redraw);
+  audio.addEventListener('pause', redraw);
+  const holder = new THREE.Group();
+  holder.add(mesh);
+  holder.userData.media = { el: audio, ov, hit: [mesh] };
+  return holder;
+}
+
+function videoObject(ov, url) {
+  const video = document.createElement('video');
+  video.crossOrigin = 'anonymous';
+  video.playsInline = true;
+  video.setAttribute('playsinline', '');
+  video.preload = 'auto';
+  video.loop = !!ov.loop_play;
+  video.src = url;
+  const tex = new THREE.VideoTexture(video);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const size = ov.size;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size * 9 / 16),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+  const badge = new THREE.Mesh(new THREE.PlaneGeometry(size * 0.18, size * 0.18),
+    new THREE.MeshBasicMaterial({ map: playBadgeTexture(), transparent: true }));
+  badge.position.z = 0.002;
+  mesh.add(badge);
+  video.addEventListener('loadedmetadata', () => {   // use the video's own shape
+    if (!video.videoWidth) return;
+    mesh.geometry.dispose();
+    mesh.geometry = new THREE.PlaneGeometry(size, size * video.videoHeight / video.videoWidth);
+  });
+  video.addEventListener('loadeddata', () => { tex.needsUpdate = true; });   // show the first frame
+  const update = () => { badge.visible = video.paused; };
+  video.addEventListener('play', update);
+  video.addEventListener('pause', update);
+  const holder = new THREE.Group();
+  holder.add(mesh);
+  holder.userData.media = { el: video, ov, hit: [mesh, badge] };
+  return holder;
+}
+
+// Audio and video players inside a group: [{el, ov, hit, object}]
+export function mediaIn(group) {
+  const out = [];
+  group.traverse(o => { if (o.userData.media) out.push({ ...o.userData.media, object: o }); });
+  return out;
+}
+
 // A red box where a file could not be loaded, so the problem is visible
 function missing(size) {
   return new THREE.Mesh(new THREE.BoxGeometry(size, size, size * 0.2),
@@ -102,6 +212,10 @@ export async function buildOverlay(ov, target, fileUrl) {
       const tex = await textureLoader.loadAsync(fileUrl(ov.asset_path));
       tex.colorSpace = THREE.SRGBColorSpace;
       obj = flat(tex, ov.size, tex.image.height / tex.image.width);
+    } else if (ov.kind === 'audio') {
+      obj = audioObject(ov, fileUrl(ov.asset_path));
+    } else if (ov.kind === 'video') {
+      obj = videoObject(ov, fileUrl(ov.asset_path));
     } else {
       obj = await modelObject(fileUrl(ov.asset_path), ov.size);
     }
@@ -178,6 +292,17 @@ export function posterView(target, overlays, fileUrl) {
       i.alt = '';
       i.style.cssText = 'display:block; width:100%; height:auto';
       el.appendChild(i);
+    } else if (ov.kind === 'audio') {
+      const c = audioCanvas(ov, false);
+      c.style.cssText = 'display:block; width:100%; height:auto';
+      el.appendChild(c);
+    } else if (ov.kind === 'video') {
+      const v = document.createElement('video');
+      v.src = fileUrl(ov.asset_path) + '#t=0.1';   // shows a frame near the start
+      v.muted = true;
+      v.preload = 'metadata';
+      v.style.cssText = 'display:block; width:100%; height:auto; background:#000';
+      el.appendChild(v);
     } else {
       el.style.cssText += 'aspect-ratio:1; border:2px dashed #fff; background:rgba(24,95,165,.35); color:#fff; display:flex;' +
         'align-items:center; justify-content:center; text-align:center; font:600 11px/1.2 system-ui, sans-serif; padding:2px; text-shadow:0 1px 2px #000';

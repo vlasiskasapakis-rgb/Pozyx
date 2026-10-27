@@ -117,8 +117,10 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
 2. Pick an image and a mode: **Generic** or **AI assisted**. Each mode has
    its own items; **Copy items from …** copies the other mode's items as a
    starting point.
-   Then **Add text**, **Add image** or **Add 3D model**
-   (`.glb`, or a `.gltf` with everything embedded). Drag items into place and
+   Then **Add text**, **Add image**, **Add 3D model** (`.glb`, or a `.gltf`
+   with everything embedded), **Add audio** or **Add video** (MP4 or WebM).
+   Audio shows as a round play button with an optional label, video as a
+   screen; both have a player in the panel to check them, and a Loop option. Drag items into place and
    use the panel on the right for size, height above the poster and rotation.
    The 3D preview shows how it will look on the phone. Changes save by themselves.
 3. **Publish to phone** after adding, removing or replacing posters (not
@@ -128,9 +130,12 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
 1. Pick the session at the top (**Refresh** loads new ones) and the content
    mode (**Generic** or **AI assisted**; it can be switched any time), then
    **Start camera**.
-2. Point the circle in the middle of the screen at a poster. While it stays
+2. Tap an audio button or a video to play it. A player bar appears with
+   Play/Pause, Stop and a timeline; only one plays at a time, and switching
+   mode or leaving the page pauses it.
+3. Point the circle in the middle of the screen at a poster. While it stays
    on a poster, that counts as a look; glances under 0.3 s are ignored.
-3. Each look is saved with start, end, length and mode, on the server clock,
+4. Each look is saved with start, end, length and mode, on the server clock,
    under the chosen session. Switching mode during a look ends it and starts a
    new one, so every look has one mode.
 

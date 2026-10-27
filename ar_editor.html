@@ -70,6 +70,11 @@
   .ov:active { cursor: grabbing; }
   .ov img, .ov canvas { display: block; width: 100%; height: auto; pointer-events: none; }
   .ov.model { aspect-ratio: 1; border: 2px dashed #fff; background: rgba(24, 95, 165, .35); color: #fff; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; font-weight: 600; padding: 4px; overflow: hidden; text-shadow: 0 1px 2px #000; transform-origin: 50% 100%; }
+  .ov video { display: block; width: 100%; height: auto; pointer-events: none; background: #000; }
+  .ov .play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 22%; aspect-ratio: 1; border-radius: 50%; background: rgba(20, 20, 18, .7); }
+  .ov .play::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-35%, -50%); border-left: 14px solid #fff; border-top: 9px solid transparent; border-bottom: 9px solid transparent; }
+  .props audio, .props video { width: 100%; }
+  .props video { border-radius: 6px; background: #000; }
   .ov.sel { outline: 2px solid var(--select); outline-offset: 3px; }
   .ov .pin { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: var(--select); border: 2px solid #fff; left: 50%; top: 50%; transform: translate(-50%, -50%); }
   .ov.model .pin { top: 100%; }
@@ -116,6 +121,8 @@
       <button id="btnAddText">Add text</button>
       <button id="btnAddImage">Add image</button>
       <button id="btnAddModel">Add 3D model</button>
+      <button id="btnAddAudio">Add audio</button>
+      <button id="btnAddVideo">Add video</button>
       <button id="btnDelTarget" class="danger">Delete image</button>
     </div>
     <div class="stagewrap"><div id="stage"><img id="stageImg" alt=""><div id="ovLayer"></div></div></div>
@@ -138,12 +145,14 @@
 <input type="file" id="fileTargets" accept="image/*" multiple hidden>
 <input type="file" id="fileImage" accept="image/*" hidden>
 <input type="file" id="fileModel" accept=".glb,.gltf" hidden>
+<input type="file" id="fileAudio" accept="audio/*" hidden>
+<input type="file" id="fileVideo" accept="video/mp4,video/webm,video/*" hidden>
 
 <script src="pozyx_db.js"></script>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { addLights, imagePlane, buildTargetGroup, mixersIn, textCanvas } from './ar_scene.js';
+import { addLights, imagePlane, buildTargetGroup, mixersIn, textCanvas, audioCanvas } from './ar_scene.js';
 
 const $ = (id) => document.getElementById(id);
 const db = window.pozyxDb;
@@ -155,6 +164,7 @@ const overlaysBy = new Map();     // target id -> ar_overlays rows
 let published = null;             // ar_published row
 let selTarget = null, selOverlay = null;
 let pickMode = 'add';
+const PICKERS = { image: 'fileImage', model: 'fileModel', audio: 'fileAudio', video: 'fileVideo' };   // file picker per item kind
 // Content mode being edited: each image has its own items for 'generic' and 'ai' (AI assisted)
 const MODES = { generic: 'Generic', ai: 'AI assisted' };
 let mode = (() => { try { return localStorage.getItem('areditor.mode') === 'ai' ? 'ai' : 'generic'; } catch (e) { return 'generic'; } })();
@@ -211,7 +221,7 @@ function selectTarget(id) {
   selOverlay = null;
   renderTargetList();
   const has = !!selTarget;
-  for (const b of ['btnAddText', 'btnAddImage', 'btnAddModel', 'btnDelTarget', 'targetName']) $(b).disabled = !has;
+  for (const b of ['btnAddText', 'btnAddImage', 'btnAddModel', 'btnAddAudio', 'btnAddVideo', 'btnDelTarget', 'targetName']) $(b).disabled = !has;
   $('targetName').value = has ? selTarget.name : '';
   renderModeButtons();
   $('stageImg').src = has ? fileUrl(selTarget.image_path) : '';
@@ -339,6 +349,15 @@ function ovElement(ov) {
   el.style.transform = (ov.kind === 'model' ? 'translate(-50%, -100%)' : 'translate(-50%, -50%)') + ` rotate(${-(+ov.rot_z || 0)}deg)`;
   if (ov.kind === 'text') el.appendChild(textCanvas(ov));
   else if (ov.kind === 'image') { const i = document.createElement('img'); i.src = fileUrl(ov.asset_path); i.alt = ''; el.appendChild(i); }
+  else if (ov.kind === 'audio') el.appendChild(audioCanvas(ov, false));
+  else if (ov.kind === 'video') {
+    const v = document.createElement('video');
+    v.src = fileUrl(ov.asset_path) + '#t=0.1';   // shows a frame near the start
+    v.muted = true;
+    v.preload = 'metadata';
+    el.appendChild(v);
+    el.insertAdjacentHTML('beforeend', '<span class="play"></span>');
+  }
   else el.innerHTML = `<span>3D · ${esc(ov.asset_name || 'model')}</span>`;
   const pin = document.createElement('span');
   pin.className = 'pin';
@@ -373,7 +392,7 @@ async function addOverlay(kind, file) {
     // new items start near the middle, a little apart so they do not cover each other
     id: 'o_' + newId(), target_id: selTarget.id, kind, mode,
     x: 0.5 + 0.1 * ((itemsOf(selTarget.id).length % 5) - 2), y: 0.5, z: kind === 'model' ? 0 : 0.02,
-    size: kind === 'text' ? 0.4 : 0.3, rot_x: 0, rot_y: 0, rot_z: 0,
+    size: { text: 0.4, audio: 0.25, video: 0.5 }[kind] || 0.3, rot_x: 0, rot_y: 0, rot_z: 0, loop_play: false,
     text: kind === 'text' ? 'Your text' : null, color: '#ffffff', background: '#000000cc', asset_path: null, asset_name: null,
   };
   try {
@@ -502,8 +521,15 @@ function renderProps() {
       <label>Background<span class="row"><input type="checkbox" data-f="hasBg"${hasBg ? ' checked' : ''}>
       <input type="color" data-f="bgColor" value="${esc(hasBg ? ov.background.slice(0, 7) : '#000000')}"></span></label></div>`;
   } else {
-    h += `<div>${ov.kind === 'model' ? '3D model' : 'Image'}: <b>${esc(ov.asset_name || '')}</b></div>
+    const what = { model: '3D model', image: 'Image', audio: 'Audio', video: 'Video' }[ov.kind];
+    h += `<div>${what}: <b>${esc(ov.asset_name || '')}</b></div>
       <button data-act="replace">Replace file…</button>`;
+  }
+  if (ov.kind === 'audio' || ov.kind === 'video') {
+    if (ov.kind === 'audio') h += `<label>Button label (optional)<input type="text" data-f="text" value="${esc(ov.text || '')}" placeholder="e.g. Listen" style="font:inherit;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text)"></label>`;
+    h += `<label>Listen / watch here<${ov.kind} controls preload="metadata" src="${esc(fileUrl(ov.asset_path))}"></${ov.kind}></label>
+      <label class="row" style="flex-direction:row"><input type="checkbox" data-f="loop_play"${ov.loop_play ? ' checked' : ''}> Loop (start again at the end)</label>
+      <div class="empty" style="margin:0">On the phone, visitors tap it to play, then use the player bar to pause, stop or move along the timeline.</div>`;
   }
   h += slider('size', 'Size (of image width)', 0.02, 1.5, 0.01, pct);
   h += slider('z', 'Height above the image', 0, 1, 0.01, pct);
@@ -522,6 +548,8 @@ $('props').addEventListener('input', (e) => {
   if (f === 'hasBg' || f === 'bgColor') {
     ov.background = $('props').querySelector('[data-f="hasBg"]').checked
       ? $('props').querySelector('[data-f="bgColor"]').value + 'cc' : 'transparent';
+  } else if (e.target.type === 'checkbox') {
+    ov[f] = e.target.checked;
   } else if (e.target.type === 'range') {
     ov[f] = +e.target.value;
     const out = $('props').querySelector(`[data-v="${f}"]`);
@@ -536,7 +564,7 @@ $('props').addEventListener('input', (e) => {
 $('props').addEventListener('click', (e) => {
   const act = e.target.dataset.act;
   if (act === 'delete') deleteOverlay();
-  if (act === 'replace') { pickMode = 'replace'; (selOverlay.kind === 'model' ? $('fileModel') : $('fileImage')).click(); }
+  if (act === 'replace') { pickMode = 'replace'; $(PICKERS[selOverlay.kind]).click(); }
 });
 
 /* ---------- dragging ---------- */
@@ -626,6 +654,10 @@ $('modeAi').onclick = () => setMode('ai');
 $('btnCopyMode').onclick = copyFromOtherMode;
 $('btnAddImage').onclick = () => { pickMode = 'add'; $('fileImage').click(); };
 $('btnAddModel').onclick = () => { pickMode = 'add'; $('fileModel').click(); };
+$('btnAddAudio').onclick = () => { pickMode = 'add'; $('fileAudio').click(); };
+$('btnAddVideo').onclick = () => { pickMode = 'add'; $('fileVideo').click(); };
+$('fileAudio').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) (pickMode === 'replace' ? replaceAsset(f) : addOverlay('audio', f)); };
+$('fileVideo').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) (pickMode === 'replace' ? replaceAsset(f) : addOverlay('video', f)); };
 $('fileImage').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) (pickMode === 'replace' ? replaceAsset(f) : addOverlay('image', f)); };
 $('fileModel').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) (pickMode === 'replace' ? replaceAsset(f) : addOverlay('model', f)); };
 window.addEventListener('resize', () => renderStage());

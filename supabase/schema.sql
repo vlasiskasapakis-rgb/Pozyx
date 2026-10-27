@@ -234,3 +234,8 @@ drop policy if exists "pages update" on ar_live;
 create policy "pages read"   on ar_live for select to anon using (true);
 create policy "pages add"    on ar_live for insert to anon with check (true);
 create policy "pages update" on ar_live for update to anon using (true) with check (true);
+
+-- Audio and video items (played when the visitor taps them on the phone)
+alter table ar_overlays drop constraint if exists ar_overlays_kind_check;
+alter table ar_overlays add constraint ar_overlays_kind_check check (kind in ('text', 'image', 'model', 'audio', 'video'));
+alter table ar_overlays add column if not exists loop_play boolean not null default false;   -- start again at the end
