@@ -840,14 +840,18 @@ function renderLookNow() {
 // Shows the image with the items of the mode the phone showed, live (from ar_live) or in a replay.
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
+// Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
+const CODE_VERSION = '2026-11-02a';
+let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
   try {
-    arMod = arMod || await import('./ar_scene.js');
+    arMod = arMod || await import('./ar_scene.js?v=' + CODE_VERSION);
     const [targets, overlays] = await Promise.all([pozyxDb.request('ar_targets?select=*'), pozyxDb.request('ar_overlays?select=*')]);
     arContent = { targets: new Map(targets.map(t => [t.id, t])), overlays };
     arLoadedAt = Date.now();
-  } catch (e) { /* no AR tables yet */ }
+    arContentError = '';
+  } catch (e) { arContentError = e.message || String(e); }   // e.g. no AR tables yet
   return arContent;
 }
 async function showViewing(v) {
@@ -1382,7 +1386,7 @@ function roomState() {
 async function openRoom() {
   if (!room) {
     try {
-      const { createRoomView } = await import('./room_view.js');
+      const { createRoomView } = await import('./room_view.js?v=' + CODE_VERSION);
       room = createRoomView($('room'), roomState);
     } catch (e) { roomInfo(`Could not start the room view: ${e.message}`, true); return; }
   }
@@ -1412,12 +1416,19 @@ async function loadRoomConfig() {
 }
 // Which AR images have a part in the model that lights up (same name as texture, material or object)
 async function showGlowMatches() {
-  const c = await loadArContent();
-  const names = c ? [...c.targets.values()].map(t => t.name) : [];
-  if (!names.length || !room) { $('roomGlow').textContent = ''; return; }
-  const m = room.glowMatches(names), missing = m.filter(x => !x.found).map(x => x.name);
-  $('roomGlow').textContent = `Lights up when looked at: ${m.length - missing.length} of ${m.length} AR images found in the model` +
-    (missing.length ? ` (not found: ${missing.join(', ')}; name a texture, material or object like the image)` : '.');
+  const el = $('roomGlow');
+  el.textContent = 'Checking which AR images are in the model…';
+  try {
+    const c = await loadArContent();
+    if (!c) throw new Error(arContentError || 'the AR images could not be read');
+    const names = [...c.targets.values()].map(t => t.name);
+    if (!names.length) { el.textContent = 'No images in the AR editor yet, so nothing lights up.'; return; }
+    const m = room.glowMatches(names), missing = m.filter(x => !x.found).map(x => x.name);
+    el.textContent = `Lights up when looked at: ${m.length - missing.length} of ${m.length} AR images found in the model` +
+      (missing.length ? ` (not found: ${missing.join(', ')}; name a texture, material or object like the image)` : '.');
+  } catch (e) {
+    el.textContent = `Could not check which AR images are in the model: ${e.message}`;
+  }
 }
 function renderAlignInputs() {
   const c = roomCfg || {};
