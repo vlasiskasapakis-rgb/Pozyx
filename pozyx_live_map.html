@@ -169,9 +169,11 @@
       <div id="roomInfo" class="roominfo">Loading…</div>
       <div class="row">
         <button id="btnRoomUpload">Upload GLB…</button>
+        <button id="btnRoomFbx" title="Pick the folder that holds the FBX and its texture files">Upload FBX folder…</button>
         <button id="btnRoomReset">Reset view</button>
       </div>
       <input type="file" id="fileRoom" accept=".glb,.gltf" hidden>
+      <input type="file" id="fileRoomFbx" webkitdirectory multiple hidden>
       <div id="roomGlow" class="hint"></div>
       <details id="roomNames" class="hint" hidden>
         <summary>Names in the model</summary>
@@ -186,6 +188,8 @@
         <label>Move z (m)<input type="number" id="alOz" step="0.05" value="0"></label>
         <label>Turn (°)<input type="number" id="alRot" step="1" value="0"></label>
         <label>Scale<input type="number" id="alScale" step="0.01" value="1"></label>
+        <label title="Turn this on when the model lies on its side (Z-up files from 3ds Max, Revit, SketchUp)">Upright
+          <span style="display:flex; align-items:center; gap:6px; color:var(--text)"><input type="checkbox" id="alUpright" style="width:auto"> Z-up</span></label>
       </div>
       <p class="hint">Drag to orbit, right-drag to pan, scroll to zoom. The figure stands on the floor at the tag's position.</p>
     </div>
@@ -845,7 +849,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-02b';
+const CODE_VERSION = '2026-11-02d';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1411,8 +1415,14 @@ async function loadRoomConfig() {
   room.setAlign(alignOf(roomCfg));
   roomInfo(`Loading ${roomCfg.model_name}…`);
   try {
-    await room.loadModel(pozyxDb.fileUrl(roomCfg.model_path), (p) => roomInfo(`Loading ${roomCfg.model_name}… ${Math.round(p * 100)}%`));
-    roomInfo(`Model: ${roomCfg.model_name}`);
+    const isFbx = roomCfg.model_type === 'fbx';
+    const files = {};
+    for (const [name, path] of Object.entries(roomCfg.model_files || {})) files[name] = pozyxDb.fileUrl(path);
+    const res = await room.loadModel(pozyxDb.fileUrl(roomCfg.model_path), (p) => roomInfo(`Loading ${roomCfg.model_name}… ${Math.round(p * 100)}%`),
+      isFbx ? { type: 'fbx', files, zUp: roomCfg.z_up, onTextures: showGlowMatches } : {});
+    if (isFbx && roomCfg.z_up == null) { roomCfg.z_up = res.zUp; saveRoomCfg(); }   // remember what was detected
+    $('alUpright').checked = !!roomCfg.z_up;
+    roomInfo(`Model: ${roomCfg.model_name}${isFbx ? ` with ${Object.keys(files).length} texture files` : ''}`);
     showGlowMatches();
   } catch (e) {
     roomInfo(`Could not load the model: ${e.message}`, true);
@@ -1461,16 +1471,69 @@ async function uploadRoom(file) {
   try {
     const path = `room/${Date.now().toString(36)}_${file.name.replace(/[^A-Za-z0-9._-]+/g, '_')}`;
     await pozyxDb.uploadFile(path, file, 'model/gltf-binary');
-    const old = roomCfg && roomCfg.model_path;
+    const oldFiles = roomFilePaths();
     roomCfg = { offset_x: 0, offset_y: 0, offset_z: 0, rotation_deg: 0, scale: 1, ...(roomCfg || {}),
-      id: 'current', model_path: path, model_name: file.name, updated_at_unix_ms: Date.now() };
+      id: 'current', model_path: path, model_name: file.name, model_type: 'glb', model_files: null, z_up: null, updated_at_unix_ms: Date.now() };
     await pozyxDb.upsert('room_model', [roomCfg], 'id');
-    if (old) pozyxDb.removeFiles([old]).catch(() => {});
+    pozyxDb.removeFiles(oldFiles).catch(() => {});
   } catch (e) {
     roomInfo(`Could not upload: ${e.message}${file.size > 50e6 ? ' (Supabase free plan allows up to 50 MB per file)' : ''}`, true);
     return;
   }
   await loadRoomConfig();
+}
+// every stored file of the current room model, to delete when it is replaced
+function roomFilePaths() {
+  if (!roomCfg) return [];
+  return [roomCfg.model_path, ...Object.values(roomCfg.model_files || {})].filter(Boolean);
+}
+// FBX: the folder with the .fbx and its texture files. The textures keep their file names, which
+// the FBX refers to and which light up when their image is looked at.
+const IMAGE_FILE = /\.(jpe?g|png|tga|bmp|gif|webp)$/i;
+async function uploadRoomFbx(fileList) {
+  if (!hasDb()) return;
+  const all = [...fileList];
+  const fbx = all.find(f => /\.fbx$/i.test(f.name));
+  if (!fbx) { roomInfo('No .fbx file in that folder. Pick the folder that holds the FBX and its textures.', true); return; }
+  const textures = all.filter(f => IMAGE_FILE.test(f.name));
+  const tiffs = all.filter(f => /\.tiff?$/i.test(f.name)).length;
+  const stamp = Date.now().toString(36);
+  const safe = (n) => n.replace(/[^A-Za-z0-9._-]+/g, '_');
+  const files = {};
+  let done = 0, failed = 0;
+  const total = textures.length + 1;
+  const show = () => roomInfo(`Uploading ${fbx.name} and ${textures.length} textures… ${done} of ${total}${failed ? ` (${failed} failed)` : ''}`);
+  show();
+  try {
+    const fbxPath = `room/${stamp}/${safe(fbx.name)}`;
+    await pozyxDb.uploadFile(fbxPath, fbx, 'application/octet-stream');
+    done++;
+    const queue = [...textures];
+    const worker = async () => {
+      while (queue.length) {
+        const f = queue.shift();
+        const path = `room/${stamp}/textures/${safe(f.name)}`;
+        try { await pozyxDb.uploadFile(path, f, f.type || 'application/octet-stream'); files[f.name.toLowerCase()] = path; }
+        catch (e) { failed++; }
+        done++;
+        show();
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);   // 4 uploads at a time
+    const oldFiles = roomFilePaths();
+    roomCfg = { offset_x: 0, offset_y: 0, offset_z: 0, rotation_deg: 0, scale: 1, ...(roomCfg || {}),
+      id: 'current', model_path: fbxPath, model_name: fbx.name, model_type: 'fbx', model_files: files, z_up: null, updated_at_unix_ms: Date.now() };
+    await pozyxDb.upsert('room_model', [roomCfg], 'id');
+    pozyxDb.removeFiles(oldFiles).catch(() => {});
+  } catch (e) {
+    roomInfo(`Could not upload: ${/model_type|model_files|z_up/.test(e.message) ? 'run the updated supabase/schema.sql in Supabase first' : e.message}`, true);
+    return;
+  }
+  await loadRoomConfig();
+  if (failed || tiffs) {
+    roomInfo(`${$('roomInfo').textContent}.${failed ? ` ${failed} texture uploads failed: upload the folder again.` : ''}` +
+      `${tiffs ? ` ${tiffs} TIFF textures were skipped: browsers cannot show TIFF, save them as JPG or PNG.` : ''}`, !!failed);
+  }
 }
 // The Pozyx origin is the floor below A1 and x points to A2, so clicking those two spots in the
 // model is enough to line it up. The measured A1-A2 distance is used to check the scale.
@@ -1652,6 +1715,15 @@ $('btnRoom').onclick = () => setView('room');
 $('btnRoomUpload').onclick = () => $('fileRoom').click();
 $('fileRoom').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) uploadRoom(f); };
 $('btnRoomReset').onclick = () => room && room.resetView();
+$('btnRoomFbx').onclick = () => $('fileRoomFbx').click();
+$('fileRoomFbx').onchange = (e) => { const f = e.target.files; if (f.length) uploadRoomFbx(f); e.target.value = ''; };
+$('alUpright').addEventListener('change', () => {
+  if (!roomCfg || !room) return;
+  roomCfg.z_up = $('alUpright').checked;
+  room.setUpright(roomCfg.z_up);
+  room.resetView();
+  saveRoomCfg();
+});
 $('btnAlign').onclick = startAlign;
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && room) { room.pick(null); $('alignHint').textContent = 'Alignment cancelled.'; }

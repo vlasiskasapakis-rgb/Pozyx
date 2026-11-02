@@ -263,3 +263,8 @@ drop policy if exists "pages update" on room_model;
 create policy "pages read"   on room_model for select to anon using (true);
 create policy "pages add"    on room_model for insert to anon with check (true);
 create policy "pages update" on room_model for update to anon using (true) with check (true);
+
+-- Room model as FBX with separate texture files (model_files: texture file name -> storage path)
+alter table room_model add column if not exists model_type  text not null default 'glb';
+alter table room_model add column if not exists model_files jsonb;
+alter table room_model add column if not exists z_up        boolean;   -- empty = detect when loading

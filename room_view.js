@@ -9,6 +9,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { TGALoader } from 'three/addons/loaders/TGALoader.js';
 
 const P = (x, y, z) => new THREE.Vector3(x / 1000, z / 1000, -y / 1000);   // Pozyx mm -> room meters
 const FIGURE_HEIGHT = 1.7;
@@ -194,14 +196,50 @@ export function createRoomView(container, getState) {
     modelGroup.scale.setScalar(+a.scale || 1);
   }
 
-  async function loadModel(url, onProgress) {
-    const gltf = await loader.loadAsync(url, (e) => { if (onProgress && e.total) onProgress(e.loaded / e.total); });
-    if (model) modelGroup.remove(model);
-    model = gltf.scene;
-    modelGroup.add(model);
+  // The model sits in "upright" (turns a Z-up model to Y-up) inside modelGroup (the alignment)
+  const upright = new THREE.Group();
+  modelGroup.add(upright);
+  function setUpright(zUp) { upright.rotation.set(zUp ? -Math.PI / 2 : 0, 0, 0); }
+
+  // GLB: one file. FBX: opts.files maps texture file names (lower case) to their addresses, because
+  // an FBX refers to its textures by the path they had on the computer that made it.
+  // Returns {zUp} for FBX: whether the model was found (or set) to be Z-up.
+  async function loadModel(url, onProgress, opts = {}) {
+    const progress = (e) => { if (onProgress && e.total) onProgress(e.loaded / e.total); };
+    let root, result = {};
+    if (opts.type === 'fbx') {
+      const manager = new THREE.LoadingManager();
+      manager.addHandler(/\.tga$/i, new TGALoader(manager));
+      manager.setURLModifier((u) => {
+        if (u === url || u.startsWith('blob:') || u.startsWith('data:')) return u;
+        const base = decodeURIComponent(u.split(/[\\/]/).pop().split('?')[0]).toLowerCase();
+        return (opts.files && opts.files[base]) || u;
+      });
+      const texturesDone = new Promise((res) => { manager.onLoad = res; });
+      root = await new FBXLoader(manager).loadAsync(url, progress);
+      // some exporters leave out surface normals, which makes everything black: work them out
+      root.traverse((o) => { if (o.isMesh && !o.geometry.attributes.normal) o.geometry.computeVertexNormals(); });
+      // FBX units: UnitScaleFactor = centimeters per unit (1 = cm, 100 = m); assume cm when missing
+      root.scale.multiplyScalar((root.userData.unitScaleFactor || 1) / 100);
+      let zUp = opts.zUp;
+      if (zUp === null || zUp === undefined) {   // a room is wider than it is tall: if "up" is not the smallest side, it is Z-up
+        const size = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
+        zUp = size.y > Math.min(size.x, size.z);
+      }
+      result.zUp = zUp;
+      setUpright(zUp);
+      texturesDone.then(() => { if (model === root) { indexGlow(); if (opts.onTextures) opts.onTextures(); } });
+    } else {
+      root = (await loader.loadAsync(url, progress)).scene;
+      setUpright(false);
+    }
+    if (model) upright.remove(model);
+    model = root;
+    upright.add(model);
     floorGrid.visible = false;
     indexGlow();
     resetView();
+    return result;
   }
 
   // Parts of the model that light up when the visitor looks at an image: materials whose
@@ -223,7 +261,12 @@ export function createRoomView(container, getState) {
           seen.set(m, e);
           glowEntries.push(e);
           if (m.name) e.names.add(norm(m.name));
-          for (const k of MAPS) if (m[k] && m[k].name) { e.names.add(norm(m[k].name)); e.textures.add(m[k].name); }
+          for (const k of MAPS) {
+            if (!m[k]) continue;
+            const src = m[k].image && (m[k].image.currentSrc || m[k].image.src);
+            const file = src && !/^(blob|data):/.test(src) ? decodeURIComponent(src.split('?')[0].split('/').pop()) : '';
+            for (const n of [m[k].name, file]) if (n) { e.names.add(norm(n)); e.textures.add(n); }
+          }
         }
         if (o.name) e.names.add(norm(o.name));
       }
@@ -256,12 +299,16 @@ export function createRoomView(container, getState) {
     for (const e of glowEntries) {
       if (e.mat.name) materials.add(e.mat.name);
       for (const t of e.textures) textures.add(t);
-      for (const k of MAPS) if (e.mat[k] && !e.mat[k].name) unnamedTextures++;
+      for (const k of MAPS) {
+        const t = e.mat[k];
+        const src = t && t.image && (t.image.currentSrc || t.image.src);
+        if (t && !t.name && !(src && !/^(blob|data):/.test(src))) unnamedTextures++;
+      }
     }
     return { textures: [...textures].sort(), materials: [...materials].sort(), unnamedTextures };
   }
   function removeModel() {
-    if (model) modelGroup.remove(model);
+    if (model) upright.remove(model);
     model = null;
     floorGrid.visible = true;
   }
@@ -304,7 +351,7 @@ export function createRoomView(container, getState) {
   return {
     show() { if (!running) { running = true; resize(); requestAnimationFrame(frame); } },
     hide() { running = false; label.hidden = true; },
-    loadModel, removeModel, setAlign, resetView, pick, alignFromPoints, glowMatches, modelNames,
+    loadModel, removeModel, setAlign, setUpright, resetView, pick, alignFromPoints, glowMatches, modelNames,
     get hasModel() { return !!model; },
     get model() { return model; },
   };

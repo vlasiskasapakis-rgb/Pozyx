@@ -168,6 +168,11 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
 
 1. **Upload GLB…** (stored in Supabase; loaded automatically afterwards).
    Up to 50 MB on the free plan; Draco and meshopt compressed GLBs work.
+   Or **Upload FBX folder…**: pick the folder with the `.fbx` and its texture
+   files (JPG, PNG, TGA, BMP; TIFF cannot be shown in browsers). The textures
+   keep their file names, which the FBX refers to and which can light up.
+   FBX units (often cm) are converted to meters; a Z-up model is stood
+   upright automatically (the **Upright: Z-up** box changes it).
 2. Line it up: **Align with A1 and A2…**, then click the floor directly below
    anchor A1 in the model, then below A2. Fine-tune with Move x / up / z, Turn
    and Scale (1 = the model is in meters). The page reports the A1–A2 distance
