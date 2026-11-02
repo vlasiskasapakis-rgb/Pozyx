@@ -242,3 +242,24 @@ alter table ar_overlays add column if not exists loop_play boolean not null defa
 
 -- Marker quality of each image (score, parts, tips and feature points), measured by the AR editor
 alter table ar_targets add column if not exists quality jsonb;
+
+-- 3D model of the real space for the live map's Room view, and how it lines up with the
+-- Pozyx coordinates (meters, degrees). One row, id 'current'. The file is in storage bucket "ar".
+create table if not exists room_model (
+  id                 text primary key,
+  model_path         text,
+  model_name         text,
+  offset_x           double precision not null default 0,
+  offset_y           double precision not null default 0,
+  offset_z           double precision not null default 0,
+  rotation_deg       double precision not null default 0,
+  scale              double precision not null default 1,
+  updated_at_unix_ms bigint
+);
+alter table room_model enable row level security;
+drop policy if exists "pages read"   on room_model;
+drop policy if exists "pages add"    on room_model;
+drop policy if exists "pages update" on room_model;
+create policy "pages read"   on room_model for select to anon using (true);
+create policy "pages add"    on room_model for insert to anon with check (true);
+create policy "pages update" on room_model for update to anon using (true) with check (true);

@@ -40,6 +40,16 @@
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
   .side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   #map { width: 100%; height: 72vh; min-height: 360px; display: block; touch-action: none; user-select: none; }
+  .roomview { position: relative; width: 100%; height: 72vh; min-height: 360px; border-radius: 8px; overflow: hidden; }
+  .roomview canvas { display: block; }
+  .roomlabel { position: absolute; transform: translate(-50%, -100%); background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none; }
+  .aligngrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+  .aligngrid label { flex-direction: column; align-items: stretch; gap: 3px; font-size: 12px; color: var(--muted); }
+  .aligngrid input { font: inherit; font-size: 13px; padding: 5px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); width: 100%; }
+  .roominfo { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .roominfo.err { color: var(--danger); }
+  #roomCard .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #roomCard .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
   #map.rot { cursor: grab; }
   #map.rot:active { cursor: grabbing; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -107,6 +117,7 @@
   <button id="btnDisconnect" disabled>Disconnect</button>
   <button id="btnRestart" disabled title="Restarts the Arduino, which re-measures the anchors">Recalibrate</button>
   <button id="btnView">Top view</button>
+  <button id="btnRoom" hidden title="Show the real space (3D model) with the visitor">Room view</button>
   <button id="btnDemo">Demo</button>
   <button id="btnClear">Clear trails</button>
   <select id="sessionSel" hidden aria-label="Session" title="Recordings are saved under this session. Pick the same one on the phone."></select>
@@ -129,6 +140,7 @@
     <div id="tapFlash" class="tapflash" hidden></div>
     <div id="lookNow" class="looknow" hidden></div>
     <svg id="map" role="img" aria-label="Map of anchors and tags"></svg>
+    <div id="room" class="roomview" hidden></div>
     <div id="replayBar" class="replay" hidden>
       <button id="btnPlay">Pause</button>
       <div class="seekwrap">
@@ -152,6 +164,26 @@
     </div>
   </div>
   <div class="side">
+    <div class="card" id="roomCard" hidden>
+      <h2>Room model</h2>
+      <div id="roomInfo" class="roominfo">Loading…</div>
+      <div class="row">
+        <button id="btnRoomUpload">Upload GLB…</button>
+        <button id="btnRoomReset">Reset view</button>
+      </div>
+      <input type="file" id="fileRoom" accept=".glb,.gltf" hidden>
+      <h2 style="margin-top:14px">Line up with the Pozyx positions</h2>
+      <button id="btnAlign" class="primary">Align with A1 and A2…</button>
+      <p class="hint" id="alignHint">Click the floor below anchor A1 in the model, then the floor below A2. Or set the numbers below.</p>
+      <div class="aligngrid">
+        <label>Move x (m)<input type="number" id="alOx" step="0.05" value="0"></label>
+        <label>Move up (m)<input type="number" id="alOy" step="0.05" value="0"></label>
+        <label>Move z (m)<input type="number" id="alOz" step="0.05" value="0"></label>
+        <label>Turn (°)<input type="number" id="alRot" step="1" value="0"></label>
+        <label>Scale<input type="number" id="alScale" step="0.01" value="1"></label>
+      </div>
+      <p class="hint">Drag to orbit, right-drag to pan, scroll to zoom. The figure stands on the floor at the tag's position.</p>
+    </div>
     <div class="card" id="viewCard" hidden>
       <h2 id="viewTitle">Visitor is viewing</h2>
       <div class="viewmeta"><span id="viewMode" class="modechip"></span><span id="viewText"></span></div>
@@ -532,7 +564,7 @@ async function loadSessions() {
 }
 function renderSessions() {
   const sel = $('sessionSel');
-  sel.hidden = $('btnNewSession').hidden = $('btnOpenDb').hidden = !hasDb();
+  sel.hidden = $('btnNewSession').hidden = $('btnOpenDb').hidden = $('btnRoom').hidden = !hasDb();
   let h = '<option value="">No session</option>';
   for (const x of dbSessions) h += `<option value="${esc(x.id)}">${esc(x.name)}</option>`;
   sel.innerHTML = h;
@@ -822,6 +854,7 @@ async function pollLive() {
   } catch (e) { return; }   // no ar_live table yet
   if (replay.active) return;
   const r = rows.find(x => sessionId && x.session_id === sessionId) || rows[0];   // prefer the selected session
+  liveLook = r && r.target_id ? `looking at ${r.target_name}${r.mode ? ` (${r.mode === 'ai' ? 'AI assisted' : 'Generic'})` : ''}` : '';
   if (!r) { showViewing(null); return; }
   const where = r.session_name ? ` · session "${r.session_name}"` : '';
   if (!r.target_id) { showViewing({ title: 'Visitor now', target_id: null, mode: r.mode, text: `Not looking at an image${where}` }); return; }
@@ -1051,6 +1084,7 @@ function niceStep(span) {
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 function draw() {
+  if (viewMode === 'room') return;   // drawn by room_view.js
   const W = svg.clientWidth, H = svg.clientHeight;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
@@ -1293,8 +1327,111 @@ svg.addEventListener('dblclick', () => {
 function setView(mode) {
   viewMode = mode;
   $('btnView').textContent = mode === '3d' ? 'Top view' : '3D view';
+  $('btnRoom').classList.toggle('primary', mode === 'room');
+  svg.toggleAttribute('hidden', mode === 'room');   // an SVG element has no .hidden property
+  $('room').hidden = $('roomCard').hidden = mode !== 'room';
   svg.classList.toggle('rot', mode === '3d');
+  if (mode === 'room') openRoom();
+  else if (room) room.hide();
   scheduleDraw();
+}
+
+/* ---------- room model view (room_view.js) ---------- */
+// The real space as a 3D model, lined up with the Pozyx coordinates; saved in table room_model.
+let room = null, roomCfg = null, roomLoaded = false, liveLook = '';
+const ALIGN = { alOx: 'offset_x', alOy: 'offset_y', alOz: 'offset_z', alRot: 'rotation_deg', alScale: 'scale' };
+const alignOf = (c) => ({ ox: c.offset_x, oy: c.offset_y, oz: c.offset_z, rot: c.rotation_deg, scale: c.scale });
+function roomInfo(text, isErr) { $('roomInfo').textContent = text; $('roomInfo').classList.toggle('err', !!isErr); }
+
+// What the room view draws: the same anchors and tags as the other views
+function roomState() {
+  let look = '';
+  if (replay.active && replay.data.looks) {
+    const lk = replay.data.looks.find(l => !l.outside && replay.t >= l.a && replay.t <= l.b);
+    if (lk) look = `looking at ${lk.name}${lk.mode ? ` (${lk.mode})` : ''}`;
+  } else look = liveLook;
+  return { anchors, tags, showTrail: $('chkTrail').checked, tapMarks: tapMarksToDraw(), look };
+}
+async function openRoom() {
+  if (!room) {
+    try {
+      const { createRoomView } = await import('./room_view.js');
+      room = createRoomView($('room'), roomState);
+    } catch (e) { roomInfo(`Could not start the room view: ${e.message}`, true); return; }
+  }
+  room.show();
+  if (!roomLoaded) { roomLoaded = true; loadRoomConfig(); }
+}
+async function loadRoomConfig() {
+  if (!hasDb()) { roomInfo('No database set in pozyx_db.js.', true); return; }
+  try {
+    roomCfg = (await pozyxDb.request('room_model?select=*&id=eq.current'))[0] || null;
+  } catch (e) {
+    roomInfo('Run the updated supabase/schema.sql in Supabase to use a room model.', true);
+    roomLoaded = false;
+    return;
+  }
+  renderAlignInputs();
+  if (!roomCfg || !roomCfg.model_path) { roomInfo('No room model yet: upload a GLB of the space (in meters).'); room.resetView(); return; }
+  room.setAlign(alignOf(roomCfg));
+  roomInfo(`Loading ${roomCfg.model_name}…`);
+  try {
+    await room.loadModel(pozyxDb.fileUrl(roomCfg.model_path), (p) => roomInfo(`Loading ${roomCfg.model_name}… ${Math.round(p * 100)}%`));
+    roomInfo(`Model: ${roomCfg.model_name}`);
+  } catch (e) {
+    roomInfo(`Could not load the model: ${e.message}`, true);
+  }
+}
+function renderAlignInputs() {
+  const c = roomCfg || {};
+  for (const [id, f] of Object.entries(ALIGN)) $(id).value = +(c[f] ?? (f === 'scale' ? 1 : 0)).toFixed(f === 'rotation_deg' ? 1 : 3);
+}
+let roomSaveTimer = null;
+function saveRoomCfg() {
+  clearTimeout(roomSaveTimer);
+  roomSaveTimer = setTimeout(() => {
+    roomCfg.updated_at_unix_ms = Date.now();
+    pozyxDb.upsert('room_model', [roomCfg], 'id').catch(e => roomInfo(`Could not save the alignment: ${e.message}`, true));
+  }, 400);
+}
+async function uploadRoom(file) {
+  if (!hasDb()) return;
+  roomInfo(`Uploading ${file.name} (${(file.size / 1e6).toFixed(1)} MB)…`);
+  try {
+    const path = `room/${Date.now().toString(36)}_${file.name.replace(/[^A-Za-z0-9._-]+/g, '_')}`;
+    await pozyxDb.uploadFile(path, file, 'model/gltf-binary');
+    const old = roomCfg && roomCfg.model_path;
+    roomCfg = { offset_x: 0, offset_y: 0, offset_z: 0, rotation_deg: 0, scale: 1, ...(roomCfg || {}),
+      id: 'current', model_path: path, model_name: file.name, updated_at_unix_ms: Date.now() };
+    await pozyxDb.upsert('room_model', [roomCfg], 'id');
+    if (old) pozyxDb.removeFiles([old]).catch(() => {});
+  } catch (e) {
+    roomInfo(`Could not upload: ${e.message}${file.size > 50e6 ? ' (Supabase free plan allows up to 50 MB per file)' : ''}`, true);
+    return;
+  }
+  await loadRoomConfig();
+}
+// The Pozyx origin is the floor below A1 and x points to A2, so clicking those two spots in the
+// model is enough to line it up. The measured A1-A2 distance is used to check the scale.
+function startAlign() {
+  if (!room || !room.hasModel) { roomInfo('Upload a room model first.', true); return; }
+  const list = [...anchors.values()];
+  const a1 = list.find(a => a.x === 0 && a.y === 0) || { x: 0, y: 0, z: 0 };
+  const a2 = list.find(a => a !== a1 && Math.abs(a.y) < 1 && a.x > 0) || null;
+  $('alignHint').textContent = 'Click the floor directly below anchor A1 in the model (Esc cancels).';
+  room.pick((p1) => {
+    $('alignHint').textContent = 'Now click the floor directly below anchor A2.';
+    room.pick((p2) => {
+      const r = room.alignFromPoints(p1, p2, a1, a2 || { x: 1000, y: 0, z: 0 }, roomCfg.scale);
+      Object.assign(roomCfg, { offset_x: r.ox, offset_y: r.oy, offset_z: r.oz, rotation_deg: r.rot });
+      room.setAlign(alignOf(roomCfg));
+      renderAlignInputs();
+      saveRoomCfg();
+      const check = a2 ? ` A1 to A2 is ${r.modelDist.toFixed(2)} m in the model and ${r.pozyxDist.toFixed(2)} m measured by the Pozyx` +
+        (Math.abs(r.modelDist / r.pozyxDist - 1) > 0.1 ? ': a big difference, so check the clicks or the model\'s scale.' : '.') : '';
+      $('alignHint').textContent = 'Lined up.' + check;
+    });
+  });
 }
 
 function renderTables() {
@@ -1450,6 +1587,24 @@ $('btnDemo').onclick = () => (demoTimer ? stopDemo() : startDemo());
 $('btnClear').onclick = () => { for (const t of tags.values()) { t.trail = []; } scheduleDraw(); };
 $('chkTrail').onchange = scheduleDraw;
 $('btnView').onclick = () => setView(viewMode === '3d' ? 'top' : '3d');
+$('btnRoom').onclick = () => setView('room');
+$('btnRoomUpload').onclick = () => $('fileRoom').click();
+$('fileRoom').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) uploadRoom(f); };
+$('btnRoomReset').onclick = () => room && room.resetView();
+$('btnAlign').onclick = startAlign;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && room) { room.pick(null); $('alignHint').textContent = 'Alignment cancelled.'; }
+});
+for (const [id, f] of Object.entries(ALIGN)) {
+  $(id).addEventListener('input', () => {
+    if (!roomCfg) roomCfg = { id: 'current', offset_x: 0, offset_y: 0, offset_z: 0, rotation_deg: 0, scale: 1 };
+    const v = parseFloat($(id).value);
+    if (!Number.isFinite(v)) return;
+    roomCfg[f] = v;
+    if (room) room.setAlign(alignOf(roomCfg));
+    saveRoomCfg();
+  });
+}
 
 $('btnRec').onclick = () => (rec.on ? stopRec() : startRec());
 $('btnSaveJson').onclick = saveJson;

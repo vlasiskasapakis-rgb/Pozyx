@@ -12,6 +12,7 @@ other apps.
 | `ar_editor.html` | Laptop page: upload poster images and place text, images and 3D models on them. |
 | `ar_viewer.html` | Phone page: shows those overlays on the posters through the camera (AR) and records which poster you look at, and for how long. |
 | `unity/PozyxReplay.cs` | Unity script: replays an exported session and turns looked-at images green (see `unity/README.md`). |
+| `room_view.js` | The live map's Room view: the real space as a 3D model with the visitor as a figure. |
 | `ar_scene.js` | Shared code that builds the AR overlays (used by the editor preview and the viewer). |
 
 ## 1. Arduino sketch
@@ -157,6 +158,20 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
 - Replay: the same box shows what was being viewed at each moment. Look bars
   and the Looks list are coloured by mode (orange Generic, purple AI assisted). Replays in the live map show looks as bars under the
    timeline and in a "Looks" list.
+
+## 6. Room view (3D model of the space)
+
+In the live map, **Room view** shows your space as a 3D model (GLB, in meters)
+with the visitor as a 1.7 m figure walking in it, the trail, the anchors and
+phone taps; live and in replays. Needs the updated `supabase/schema.sql`
+(table `room_model`).
+
+1. **Upload GLB…** (stored in Supabase; loaded automatically afterwards).
+   Up to 50 MB on the free plan; Draco and meshopt compressed GLBs work.
+2. Line it up: **Align with A1 and A2…**, then click the floor directly below
+   anchor A1 in the model, then below A2. Fine-tune with Move x / up / z, Turn
+   and Scale (1 = the model is in meters). The page reports the A1–A2 distance
+   in the model and as measured, to check the result.
 
 ## Syncing tips
 
