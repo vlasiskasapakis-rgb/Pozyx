@@ -12,6 +12,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { TGALoader } from 'three/addons/loaders/TGALoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { MeshBVH } from 'three-mesh-bvh';
 
 const P = (x, y, z) => new THREE.Vector3(x / 1000, z / 1000, -y / 1000);   // Pozyx mm -> room meters
 const FIGURE_HEIGHT = 1.7;
@@ -226,7 +227,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     let key = `${state.look}|${state.showTrail}|${dynSig}|${state.dir ? state.dir.angle.toFixed(3) + ',' + state.dir.pitch.toFixed(3) : ''}`;
     for (const [id, t] of state.tags) if (t.pos) key += `|${id}:${t.pos.x},${t.pos.y},${t.trail.length}`;
     if (key !== lastStateKey) { lastStateKey = key; needsRender = true; }
-    if (needsRender) updateDynamic(state);
+    if (needsRender) { updateDynamic(state); placePlanLabels(); }
     if (model && updateGlow(state.lookImage, dt)) needsRender = true;
     if (needsRender) {
       renderer.render(scene, camera);
@@ -334,6 +335,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       root = (packed ? await loader.parseAsync(await fetchModelData(url, opts.parts, progress), '') : await loader.loadAsync(url, progress)).scene;
       setUpright(false);
     }
+    planMeshes = [];
     const merged = mergeByMaterial(root);   // fewer, bigger parts draw much faster
     stats = { parts: merged.before, drawn: merged.group.children.length };
     root = merged.group;
@@ -494,6 +496,188 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     needsRender = true;
   }
 
+  /* ---------- anchor planning (before installing) ---------- */
+  // Proposed anchors in room coordinates (meters: x, z along the floor, h = height above the
+  // model's floor) and a floor map of how many of them a phone held at PLAN_PHONE_H can see with no
+  // wall, partition or display case in between: green 4+, yellow 3, red 2 or fewer.
+  const PLAN_PHONE_H = 1.3, PLAN_CELL = 0.4;
+  const planGroup = new THREE.Group();
+  planGroup.visible = false;
+  scene.add(planGroup);
+  let plan = [], planFloorY = 0, planLabels = [], coverageRun = 0, onCoverage = null;
+  const planMat = new THREE.MeshStandardMaterial({ color: 0xe8812a, emissive: 0x7a3a00 });
+  const planPoleMat = new THREE.LineDashedMaterial({ color: 0xe8812a, dashSize: 0.08, gapSize: 0.06 });
+  const planGeo = new THREE.OctahedronGeometry(0.13);
+
+  function modelBox() { return new THREE.Box3().setFromObject(modelGroup); }
+  let planCentre = null;   // a floor point inside the room being planned (the model's middle unless picked)
+  // The room's inside: from its centre at 1.5 m, the nearest wall to the left, right, front and back
+  function roomInterior() {
+    if (!planMeshes.length || !planMeshes[0].geometry.boundsTree) prepareRays();
+    const b = modelBox(), c = planCentre ? planCentre.clone() : b.getCenter(new THREE.Vector3());
+    planFloorY = b.min.y;
+    const y = planFloorY + 1.5;
+    const side = (ox, oz, dx, dz, fallback) => {
+      const d = firstHit(new THREE.Vector3(ox, y, oz), new THREE.Vector3(dx, 0, dz), 100);
+      return d === null ? fallback : d;
+    };
+    // First guess from the centre, then 7 parallel rays across that width: a partition or a display
+    // case only stops some of them, so the second farthest wall counts (one ray out of a door is ignored)
+    let r = {
+      x0: c.x - side(c.x, c.z, -1, 0, c.x - b.min.x), x1: c.x + side(c.x, c.z, 1, 0, b.max.x - c.x),
+      z0: c.z - side(c.x, c.z, 0, -1, c.z - b.min.z), z1: c.z + side(c.x, c.z, 0, 1, b.max.z - c.z),
+    };
+    const across = (a0, a1) => [...Array(7)].map((_, k) => a0 + (a1 - a0) * (k + 0.5) / 7);
+    const far = list => { list.sort((p, q) => q - p); return list[Math.min(1, list.length - 1)]; };
+    const zs = across(r.z0, r.z1), xs = across(r.x0, r.x1);
+    return {
+      x0: c.x - Math.min(c.x - b.min.x, far(zs.map(z => side(c.x, z, -1, 0, 0)))),
+      x1: c.x + Math.min(b.max.x - c.x, far(zs.map(z => side(c.x, z, 1, 0, 0)))),
+      z0: c.z - Math.min(c.z - b.min.z, far(xs.map(x => side(x, c.z, 0, -1, 0)))),
+      z1: c.z + Math.min(b.max.z - c.z, far(xs.map(x => side(x, c.z, 0, 1, 0)))),
+    };
+  }
+  // Four corners alternating high and low, and a high anchor on a stand in the middle
+  function suggestPlan() {
+    const r = roomInterior(), i = 0.3;
+    const x0 = r.x0 + i, x1 = r.x1 - i, z0 = r.z0 + i, z1 = r.z1 - i;
+    return [{ x: x0, z: z1, h: 2.7 }, { x: x1, z: z1, h: 1.0 }, { x: x1, z: z0, h: 2.7 }, { x: x0, z: z0, h: 1.0 }, { x: (x0 + x1) / 2, z: (z0 + z1) / 2, h: 2.7 }];
+  }
+  // Click on the floor of the room to plan (when the model has several rooms)
+  function pickPlanCentre(done) {
+    pick((local, hit) => { planCentre = hit.world.clone(); if (done) done(); });
+  }
+  function setPlan(list) {
+    plan = list.map(a => ({ x: +a.x, z: +a.z, h: +a.h }));
+    renderPlan();
+    computeCoverage();
+  }
+  function showPlan(on) {
+    planGroup.visible = !!on;
+    for (const l of planLabels) l.hidden = !on;
+    needsRender = true;
+    if (on) computeCoverage();
+  }
+  function renderPlan() {
+    planGroup.clear();
+    planLabels.forEach(l => l.remove());
+    planLabels = [];
+    if (!model) return;
+    planFloorY = modelBox().min.y;
+    plan.forEach((a, i) => {
+      const top = new THREE.Vector3(a.x, planFloorY + a.h, a.z);
+      const m = new THREE.Mesh(planGeo, planMat);
+      m.position.copy(top);
+      const pole = new THREE.Line(new THREE.BufferGeometry().setFromPoints([top, new THREE.Vector3(a.x, planFloorY, a.z)]), planPoleMat);
+      pole.computeLineDistances();
+      planGroup.add(m, pole);
+      const l = document.createElement('div');
+      l.className = 'roomlabel planlabel';
+      l.textContent = `A${i + 1} · ${a.h.toFixed(1)} m`;
+      l.hidden = !planGroup.visible;
+      container.appendChild(l);
+      planLabels.push(l);
+    });
+    needsRender = true;
+  }
+  function placePlanLabels() {
+    if (!planGroup.visible) return;
+    plan.forEach((a, i) => {
+      const v = new THREE.Vector3(a.x, planFloorY + a.h + 0.25, a.z).project(camera), l = planLabels[i];
+      if (!l) return;
+      l.hidden = v.z > 1;
+      l.style.left = ((v.x + 1) / 2 * container.clientWidth) + 'px';
+      l.style.top = ((1 - v.y) / 2 * container.clientHeight) + 'px';
+    });
+  }
+  // Move anchor i to the next click: on a wall it goes 25 cm out from it (as on a bracket)
+  function movePlanAnchor(i, done) {
+    pick((local, hit) => {
+      const n = hit.normal, flat = new THREE.Vector3(n.x, 0, n.z);
+      const p = hit.world.clone();
+      if (Math.abs(n.y) < 0.5 && flat.lengthSq() > 0) p.addScaledVector(flat.normalize(), 0.25);
+      plan[i] = { ...plan[i], x: p.x, z: p.z };
+      renderPlan();
+      computeCoverage();
+      if (done) done(plan);
+    });
+  }
+
+  // Line of sight is checked against the model on both sides of every surface, sped up with a
+  // bounding volume tree per mesh (built once)
+  let planMeshes = [];
+  const inv = new THREE.Matrix4(), localRay = new THREE.Ray();
+  function prepareRays() {
+    planMeshes = [];
+    model.updateMatrixWorld(true);
+    model.traverse((o) => {
+      if (!o.isMesh || !o.geometry.attributes.position) return;
+      if (!o.geometry.boundsTree) o.geometry.boundsTree = new MeshBVH(o.geometry);
+      planMeshes.push(o);
+    });
+  }
+  function firstHit(origin, dir, far) {   // distance to the nearest surface along dir, or null
+    let best = null;
+    for (const m of planMeshes) {
+      inv.copy(m.matrixWorld).invert();
+      localRay.set(origin, dir).applyMatrix4(inv);
+      const h = m.geometry.boundsTree.raycastFirst(localRay, THREE.DoubleSide);
+      if (!h) continue;
+      const d = h.point.applyMatrix4(m.matrixWorld).distanceTo(origin);
+      if (d <= far && (best === null || d < best)) best = d;
+    }
+    return best;
+  }
+  let coverageMesh = null;
+  async function computeCoverage() {
+    const run = ++coverageRun;
+    if (!model || !planGroup.visible || !plan.length) return;
+    await new Promise(r => setTimeout(r, 30));   // let several quick changes settle
+    if (run !== coverageRun) return;
+    if (!planMeshes.length || !planMeshes[0].geometry.boundsTree) prepareRays();
+    const r = roomInterior(), down = new THREE.Vector3(0, -1, 0), cells = [];
+    const tops = plan.map(a => new THREE.Vector3(a.x, planFloorY + a.h, a.z));
+    let t0 = performance.now();
+    for (let x = r.x0 + PLAN_CELL / 2; x < r.x1; x += PLAN_CELL) {
+      for (let z = r.z0 + PLAN_CELL / 2; z < r.z1; z += PLAN_CELL) {
+        // the floor below this spot: the first surface under phone height, low enough to stand on
+        const start = new THREE.Vector3(x, planFloorY + PLAN_PHONE_H, z);
+        const fd = firstHit(start, down, PLAN_PHONE_H + 0.5);
+        if (fd === null || PLAN_PHONE_H - fd > 0.4) continue;   // outside the model, or on a case or wall top
+        const floorY = start.y - fd, eye = new THREE.Vector3(x, floorY + PLAN_PHONE_H, z);
+        let seen = 0;
+        for (const top of tops) {
+          const d = top.clone().sub(eye), len = d.length();
+          if (firstHit(eye, d.normalize(), len - 0.2) === null) seen++;
+        }
+        cells.push({ x, z, y: floorY + 0.02, seen });
+        if (performance.now() - t0 > 25) {   // keep the page responsive
+          await new Promise(r => setTimeout(r));
+          if (run !== coverageRun) return;
+          t0 = performance.now();
+        }
+      }
+    }
+    if (coverageMesh) { planGroup.remove(coverageMesh); coverageMesh.geometry.dispose(); }
+    const quad = new THREE.PlaneGeometry(PLAN_CELL * 0.92, PLAN_CELL * 0.92).rotateX(-Math.PI / 2);
+    coverageMesh = new THREE.InstancedMesh(quad, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.55, depthWrite: false }), Math.max(1, cells.length));
+    const mtx = new THREE.Matrix4(), col = new THREE.Color();
+    const count = { good: 0, ok: 0, bad: 0 };
+    cells.forEach((c, i) => {
+      mtx.makeTranslation(c.x, c.y, c.z);
+      coverageMesh.setMatrixAt(i, mtx);
+      const k = c.seen >= 4 ? 'good' : c.seen === 3 ? 'ok' : 'bad';
+      count[k]++;
+      coverageMesh.setColorAt(i, col.set(k === 'good' ? 0x2fbf71 : k === 'ok' ? 0xf2c14e : 0xe5534b));
+    });
+    coverageMesh.count = cells.length;
+    planGroup.add(coverageMesh);
+    needsRender = true;
+    let far = 0;
+    for (let i = 0; i < tops.length; i++) for (let j = i + 1; j < tops.length; j++) far = Math.max(far, tops[i].distanceTo(tops[j]));
+    if (onCoverage) onCoverage({ ...count, total: cells.length, maxDistance: far });
+  }
+
   // Two-point alignment: the caller asks for a click on the model; the point comes back in the
   // model's own coordinates (before alignment)
   const ray = new THREE.Raycaster();
@@ -508,7 +692,8 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     const cb = pickCb;
     pickCb = null;
     renderer.domElement.style.cursor = '';
-    cb(modelGroup.worldToLocal(hit.point.clone()));
+    const normal = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : new THREE.Vector3(0, 1, 0);
+    cb(modelGroup.worldToLocal(hit.point.clone()), { world: hit.point.clone(), normal });
   });
   function pick(cb) { pickCb = cb; renderer.domElement.style.cursor = cb ? 'crosshair' : ''; }
 
@@ -536,6 +721,11 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     get hasModel() { return !!model; },
     get model() { return model; },
     get stats() { return stats; },
+    suggestPlan, setPlan, showPlan, movePlanAnchor, pickPlanCentre,
+    get planCentre() { return planCentre; },
+    set planCentre(p) { planCentre = p ? new THREE.Vector3(p.x, p.y || 0, p.z) : null; },
+    get plan() { return plan; },
+    set onCoverage(fn) { onCoverage = fn; },
     setShowAs(v) { if (['phone', 'person', 'both'].includes(v)) { showAs = v; needsRender = true; lastStateKey = ''; } },
     setQuality,
   };

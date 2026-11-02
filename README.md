@@ -188,6 +188,19 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    `MIRO_A20`; case, extensions and spaces/dashes do not matter). The Room
    model panel lists which AR images were found, and "Names in the model"
    shows the model's texture and material names to compare.
+4. **Plan anchors (before installing)**: tick **Show anchor plan and
+   coverage** to see proposed anchors (orange markers with their height) in
+   the model and the floor coloured by how many anchors a phone held at 1.3 m
+   can see in a straight line: green 4 or more (good 3D), yellow 3 (2.5D only),
+   red 2 or fewer. Walls, partitions and display cases in the model block the
+   line, so the colours show where tracking will be weak.
+   **Suggest layout** puts four anchors in the corners, alternating 2.7 m and
+   1.0 m (the height difference is what gives Pozyx its height reading
+   without the ceiling), plus one at 2.7 m on a stand in the middle. Change a
+   height in the list, or **Move** an anchor and click a wall or the floor in
+   the model (on a wall it sits 25 cm out). **Pick room centre** chooses which
+   room to plan when the model has several. The plan is saved per computer and
+   per model; the panel also warns when two anchors are more than 15 m apart.
 
 ## 7. Phone direction
 
