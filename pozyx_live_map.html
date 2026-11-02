@@ -614,6 +614,7 @@ function parseRecording(text, name) {
     }
   } else {
     const d = JSON.parse(text);
+    if (d && d.format === 'pozyx-session') return parseSessionExport(d);
     if (!d || !Array.isArray(d.samples)) throw new Error('not a Pozyx recording');
     anchorsOut = (d.anchors || []).map(a => ({ id: String(a.id).toUpperCase(), x: +a.x, y: +a.y, z: +a.z }));
     samples = d.samples.map(s => ({ t: +s.t, id: String(s.id).toUpperCase(), x: +s.x, y: +s.y, z: +s.z }))
@@ -622,6 +623,30 @@ function parseRecording(text, name) {
   samples.sort((a, b) => a.t - b.t);
   const duration = samples.length ? samples[samples.length - 1].t : 0;
   return { anchors: anchorsOut, samples, duration };
+}
+
+// A session exported with "Export JSON" (for Unity): positions, looks and taps, all in seconds from
+// the recording start. Read back so replays of saved files show looks and taps too.
+function parseSessionExport(d) {
+  const num = (v) => Number.isFinite(+v) ? +v : 0;
+  const samples = (d.positions || []).map(q => ({ t: num(q.t), id: String(q.tag || '').toUpperCase(), x: num(q.x), y: num(q.y), z: num(q.z) }))
+    .sort((a, b) => a.t - b.t);
+  if (!samples.length) throw new Error('no positions in file');
+  const rec = d.recording || {}, start = num(rec.startUnixMs);
+  const modeName = (m) => m === 'ai' ? 'AI assisted' : m === 'generic' ? 'Generic' : '';
+  return {
+    anchors: (d.anchors || []).map(a => ({ id: String(a.id).toUpperCase(), x: num(a.x), y: num(a.y), z: num(a.z) })),
+    samples,
+    duration: Math.max(num(rec.duration), samples[samples.length - 1].t),
+    startUnix: start || undefined,
+    taps: (d.taps || []).map(tp => ({ t: num(tp.t), unix_ms: num(tp.unixMs) || start + num(tp.t) * 1000, label: tp.label || '', other: null })),
+    looks: (d.looks || []).map(lk => ({
+      a0: num(lk.start), b0: num(lk.end), unix: num(lk.startUnixMs) || start + num(lk.start) * 1000,
+      name: lk.image || 'image', target_id: lk.imageId || null, modeKey: lk.mode || 'generic', mode: modeName(lk.mode),
+      other: lk.otherSession || null,
+    })),
+    meta: { sessionId: (d.session && d.session.id) || '', sessionName: (d.session && d.session.name) || '', recordingId: rec.id || '' },
+  };
 }
 
 function clearTables() {
