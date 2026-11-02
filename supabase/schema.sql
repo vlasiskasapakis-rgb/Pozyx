@@ -269,5 +269,36 @@ alter table room_model add column if not exists model_type  text not null defaul
 alter table room_model add column if not exists model_files jsonb;
 alter table room_model add column if not exists z_up        boolean;   -- empty = detect when loading
 
+-- Phone orientation from the AR viewer (about 5 per second while the camera runs): where the back
+-- camera points. heading = compass bearing (0 = north, 90 = east), pitch = up (+) / down (-),
+-- roll = sideways tilt, all in degrees; times on the server clock like the positions.
+create table if not exists phone_pose (
+  id           text primary key,
+  device_id    text,
+  session_id   text,
+  unix_ms      bigint not null,
+  heading      real,
+  pitch        real,
+  roll         real
+);
+create index if not exists phone_pose_time on phone_pose (unix_ms);
+alter table phone_pose enable row level security;
+drop policy if exists "pages read"   on phone_pose;
+drop policy if exists "pages add"    on phone_pose;
+drop policy if exists "pages update" on phone_pose;
+drop policy if exists "pages delete" on phone_pose;
+create policy "pages read"   on phone_pose for select to anon using (true);
+create policy "pages add"    on phone_pose for insert to anon with check (true);
+create policy "pages update" on phone_pose for update to anon using (true) with check (true);
+create policy "pages delete" on phone_pose for delete to anon using (true);
+
+-- The phone's direction right now, for the live map
+alter table ar_live add column if not exists heading real;
+alter table ar_live add column if not exists pitch   real;
+
+-- Compass bearing of the room's x axis (from A1 towards A2), to turn compass headings into room
+-- directions; set in the live map with "Phone points along A1 -> A2 now"
+alter table room_model add column if not exists x_axis_heading real;
+
 -- Make the API notice new tables and columns straight away
 notify pgrst, 'reload schema';

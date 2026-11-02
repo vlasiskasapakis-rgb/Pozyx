@@ -185,6 +185,13 @@
         <summary>Names in the model</summary>
         <div id="roomNamesList" style="max-height:220px; overflow:auto; margin-top:6px; white-space:normal"></div>
       </details>
+      <h2 style="margin-top:14px">Compass (phone direction)</h2>
+      <div class="aligngrid" style="grid-template-columns: minmax(0, 1fr) auto; align-items:end">
+        <label title="Compass bearing of the room's x axis, from A1 towards A2 (0 = north, 90 = east)">A1 → A2 points to (°)
+          <input type="number" id="xAxisHeading" step="1" min="0" max="360" placeholder="not set"></label>
+        <button id="btnCompass" title="Hold the phone (AR viewer running) at A1 with its back camera pointing at A2, then click">Phone points along A1 → A2 now</button>
+      </div>
+      <p class="hint" id="compassHint">Needed once, so the phone's compass direction can be shown in the room.</p>
       <h2 style="margin-top:14px">Line up with the Pozyx positions</h2>
       <button id="btnAlign" class="primary">Align with A1 and A2…</button>
       <p class="hint" id="alignHint">Click the floor below anchor A1 in the model, then the floor below A2. Or set the numbers below.</p>
@@ -659,6 +666,7 @@ function parseSessionExport(d) {
       name: lk.image || 'image', target_id: lk.imageId || null, modeKey: lk.mode || 'generic', mode: modeName(lk.mode),
       other: lk.otherSession || null,
     })),
+    poses: (d.orientation || []).length ? d.orientation.map(q => ({ t: num(q.t), heading: num(q.heading), pitch: num(q.pitch), roll: num(q.roll) })) : null,
     meta: { sessionId: (d.session && d.session.id) || '', sessionName: (d.session && d.session.name) || '', recordingId: rec.id || '' },
   };
 }
@@ -855,7 +863,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-02g';
+const CODE_VERSION = '2026-11-02h';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -899,6 +907,7 @@ async function pollLive() {
   if (replay.active) return;
   const r = rows.find(x => sessionId && x.session_id === sessionId) || rows[0];   // prefer the selected session
   liveLookImage = r && r.target_id ? r.target_name : '';
+  liveDir = r && Number.isFinite(r.heading) && r.heading !== null ? { heading: r.heading, pitch: r.pitch || 0 } : null;
   liveLook = r && r.target_id ? `looking at ${r.target_name}${r.mode ? ` (${r.mode === 'ai' ? 'AI assisted' : 'Generic'})` : ''}` : '';
   if (!r) { showViewing(null); return; }
   const where = r.session_name ? ` · session "${r.session_name}"` : '';
@@ -1040,6 +1049,19 @@ async function loadRecording(r, sid) {
   const samples = pos.map(q => ({ t: (+q.unix_ms - start) / 1000, id: String(q.tag).toUpperCase(), x: +q.x, y: +q.y, z: +q.z }))
     .filter(q => [q.t, q.x, q.y, q.z].every(Number.isFinite)).sort((a, b) => a.t - b.t);
   if (!samples.length) throw new Error('this recording has no positions');
+  let poses = null;
+  try {   // phone directions during the recording (the phone of this session when there is one)
+    const rows = [];
+    for (let off = 0; ; off += 1000) {
+      const page = await pozyxDb.request(`phone_pose?select=unix_ms,heading,pitch,roll,session_id&unix_ms=gte.${start - 2000}&unix_ms=lte.${Math.ceil(end) + 2000}&order=unix_ms.asc&limit=1000&offset=${off}`);
+      rows.push(...page);
+      if (page.length < 1000) break;
+    }
+    const mine = rows.filter(q => (q.session_id || '') === sid);
+    poses = (mine.length ? mine : rows).map(q => ({ t: (+q.unix_ms - start) / 1000, heading: +q.heading, pitch: +q.pitch || 0, roll: +q.roll || 0 }))
+      .filter(q => Number.isFinite(q.heading));
+    if (!poses.length) poses = null;
+  } catch (e) { poses = null; }   // no phone_pose table yet
   const data = {
     anchors: anchorRows.map(a => ({ id: String(a.anchor_id).toUpperCase(), x: +a.x, y: +a.y, z: +a.z })),
     samples,
@@ -1054,6 +1076,7 @@ async function loadRecording(r, sid) {
       name: lk.target_name || 'image', target_id: lk.target_id, modeKey: lk.mode || 'generic',
       mode: lk.mode === 'ai' ? 'AI assisted' : lk.mode === 'generic' ? 'Generic' : '', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
     })) : null,
+    poses,
     meta: { sessionId: sid, sessionName: sesName, recordingId: r.id },
   };
   return data;
@@ -1104,6 +1127,9 @@ function exportSession(data, shift) {
       startUnixMs: lk.unix, endUnixMs: Math.round(lk.unix + (lk.b0 - lk.a0) * 1000),
     })),
     taps: taps.map(({ tp, t }) => ({ t: r3(t), label: tp.label || '', unixMs: tp.unix_ms || 0 })),
+    xAxisHeading: xAxisHeading === null ? -1 : xAxisHeading,   // -1 = compass not set up
+    orientation: (data.poses || []).map(q => ({ t: r3(q.t + shift), heading: q.heading, pitch: q.pitch, roll: q.roll || 0 }))
+      .filter(q => q.t >= -1 && q.t <= dur + 1),
   };
   const safe = (v) => String(v).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
   const name = `${safe(meta.sessionName || 'session')}_${safe(meta.recordingId || 'recording')}.json`;
@@ -1215,6 +1241,12 @@ function draw() {
     const stale = !replay.active && now - t.last > 3000;
     out += `<circle cx="${x}" cy="${y}" r="16" fill="${t.color}" fill-opacity="${stale ? 0.08 : 0.18}"/>`;
     out += `<circle cx="${x}" cy="${y}" r="7" fill="${t.color}" fill-opacity="${stale ? 0.35 : 1}" stroke="var(--panel)" stroke-width="2"/>`;
+    const d = id === [...tags.keys()][0] ? phoneDirNow() : null, ang = d ? roomAngle(d.heading) : null;   // the phone carries the first tag
+    if (ang !== null) {
+      const ex = sx(t.pos.x + 700 * Math.cos(ang)), ey = sy(t.pos.y + 700 * Math.sin(ang));
+      out += `<line x1="${x}" y1="${y}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}" stroke="${t.color}" stroke-width="3" stroke-linecap="round"/>`;
+      out += `<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="4" fill="${t.color}"/>`;
+    }
     out += `<text x="${x + 14}" y="${y - 12}" font-size="12" font-weight="600" fill="${t.color}">${esc(id)}</text>`;
     out += `<text x="${x + 14}" y="${y + 2}" font-size="11" fill="var(--muted)">z ${(t.pos.z / 1000).toFixed(2)} m</text>`;
   }
@@ -1331,6 +1363,12 @@ function draw3d(W, H) {
     }
     const stale = !replay.active && now - t.last > 3000;
     out += L([t.pos.x, t.pos.y, t.pos.z], [t.pos.x, t.pos.y, 0], `stroke="${t.color}" stroke-opacity="0.6" stroke-dasharray="3 3" stroke-width="1"`);
+    const pd = id === [...tags.keys()][0] ? phoneDirNow() : null, pang = pd ? roomAngle(pd.heading) : null;   // the phone carries the first tag
+    if (pang !== null) {
+      const pp = (pd.pitch || 0) * Math.PI / 180, len = 900;
+      out += L([t.pos.x, t.pos.y, t.pos.z], [t.pos.x + len * Math.cos(pp) * Math.cos(pang), t.pos.y + len * Math.cos(pp) * Math.sin(pang), t.pos.z + len * Math.sin(pp)],
+        `stroke="${t.color}" stroke-width="3" stroke-linecap="round"`);
+    }
     const sh = P(t.pos.x, t.pos.y, 0);
     out += `<ellipse cx="${sh[0].toFixed(1)}" cy="${sh[1].toFixed(1)}" rx="9" ry="4" fill="${t.color}" fill-opacity="0.25"/>`;
     const [x, y] = P(t.pos.x, t.pos.y, t.pos.z);
@@ -1386,6 +1424,48 @@ function setView(mode) {
 let room = null, roomCfg = null, roomLoaded = false, liveLook = '', liveLookImage = '';
 const ALIGN = { alOx: 'offset_x', alOy: 'offset_y', alOz: 'offset_z', alRot: 'rotation_deg', alScale: 'scale' };
 const alignOf = (c) => ({ ox: c.offset_x, oy: c.offset_y, oz: c.offset_z, rot: c.rotation_deg, scale: c.scale });
+/* ---------- phone direction (from the AR viewer's phone_pose / ar_live) ---------- */
+// Compass bearings are turned into room directions with the bearing of the room's x axis (A1 -> A2).
+let liveDir = null, xAxisHeading = null;
+async function loadCompass() {
+  if (!hasDb()) return;
+  try {
+    const r = (await pozyxDb.request('room_model?select=x_axis_heading&id=eq.current'))[0];
+    if (r && r.x_axis_heading !== null && r.x_axis_heading !== undefined) setXAxisHeading(+r.x_axis_heading, false);
+  } catch (e) { /* older database */ }
+}
+function setXAxisHeading(v, save) {
+  xAxisHeading = Number.isFinite(v) ? ((v % 360) + 360) % 360 : null;
+  $('xAxisHeading').value = xAxisHeading === null ? '' : Math.round(xAxisHeading);
+  scheduleDraw();
+  if (!save || !hasDb()) return;
+  if (roomCfg) { roomCfg.x_axis_heading = xAxisHeading; saveRoomCfg(); return; }
+  // room settings not loaded: save only this, so the model's alignment is not touched
+  pozyxDb.upsert('room_model', [{ id: 'current', x_axis_heading: xAxisHeading }], 'id')
+    .catch(e => { $('compassHint').textContent = `Could not save: ${/x_axis_heading/.test(e.message) ? 'run the updated supabase/schema.sql in Supabase' : e.message}`; });
+}
+// Phone direction now: {heading, pitch} (degrees), from the replay or live
+function phoneDirNow() {
+  if (replay.active) return replay.data.poses ? poseAt(replay.data.poses, replay.t) : null;
+  return liveDir;
+}
+// Direction at time t in a replay, between the two nearest readings (none if they are > 2 s away)
+function poseAt(list, t) {
+  if (!list.length) return null;
+  let lo = 0, hi = list.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (list[mid].t <= t) lo = mid; else hi = mid; }
+  const a = list[lo], b = list[hi];
+  if (t <= a.t) return Math.abs(a.t - t) < 2 ? a : null;
+  if (t >= b.t) return Math.abs(t - b.t) < 2 ? b : null;
+  if (b.t - a.t > 2) return null;
+  const k = (t - a.t) / (b.t - a.t), dh = ((b.heading - a.heading + 540) % 360) - 180;
+  return { heading: (a.heading + dh * k + 360) % 360, pitch: a.pitch + (b.pitch - a.pitch) * k };
+}
+// Room direction (radians, counter-clockwise from the x axis) of a compass bearing; null without the compass setup
+function roomAngle(heading) {
+  return xAxisHeading === null ? null : (xAxisHeading - heading) * Math.PI / 180;
+}
+
 // Detail level of the room view, remembered per computer (a laptop can use less than a PC)
 function roomQuality() {
   try { const q = localStorage.getItem('pozyx.roomQuality'); if (['high', 'balanced', 'light'].includes(q)) return q; } catch (e) {}
@@ -1400,7 +1480,9 @@ function roomState() {
     const lk = replay.data.looks.find(l => !l.outside && replay.t >= l.a && replay.t <= l.b);
     if (lk) { look = `looking at ${lk.name}${lk.mode ? ` (${lk.mode})` : ''}`; lookImage = lk.name; }
   } else if (!replay.active) { look = liveLook; lookImage = liveLookImage; }
-  return { anchors, tags, showTrail: $('chkTrail').checked, tapMarks: tapMarksToDraw(), look, lookImage };
+  const d = phoneDirNow(), ang = d ? roomAngle(d.heading) : null;
+  const dir = ang === null ? null : { angle: ang, pitch: (d.pitch || 0) * Math.PI / 180 };
+  return { anchors, tags, showTrail: $('chkTrail').checked, tapMarks: tapMarksToDraw(), look, lookImage, dir };
 }
 async function openRoom() {
   if (!room) {
@@ -1422,6 +1504,7 @@ async function loadRoomConfig() {
     return;
   }
   renderAlignInputs();
+  if (roomCfg && roomCfg.x_axis_heading !== null && roomCfg.x_axis_heading !== undefined) setXAxisHeading(+roomCfg.x_axis_heading, false);
   if (!roomCfg || !roomCfg.model_path) { roomInfo('No room model yet: upload a GLB of the space (in meters).'); room.resetView(); return; }
   room.setAlign(alignOf(roomCfg));
   roomInfo(`Loading ${roomCfg.model_name}…`);
@@ -1760,6 +1843,15 @@ $('btnRoomUpload').onclick = () => $('fileRoom').click();
 $('fileRoom').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) uploadRoom(f); };
 $('btnRoomReset').onclick = () => room && room.resetView();
 $('btnRoomFbx').onclick = () => $('fileRoomFbx').click();
+$('btnCompass').onclick = () => {
+  if (!liveDir) { $('compassHint').textContent = 'No direction from the phone yet: start the AR viewer on the phone (allow motion sensors) and wait a few seconds.'; return; }
+  setXAxisHeading(liveDir.heading, true);
+  $('compassHint').textContent = `Saved: A1 → A2 points to ${Math.round(xAxisHeading)}°. The phone's direction now shows in the room and the top view.`;
+};
+$('xAxisHeading').addEventListener('change', () => {
+  const v = parseFloat($('xAxisHeading').value);
+  setXAxisHeading(Number.isFinite(v) ? v : NaN, true);
+});
 $('roomQuality').value = roomQuality();
 $('roomQuality').onchange = () => {
   try { localStorage.setItem('pozyx.roomQuality', $('roomQuality').value); } catch (e) {}
@@ -1844,6 +1936,7 @@ $('btnExitReplay').onclick = exitReplay;
 updateRecUI();
 renderSessions();
 loadSessions();
+loadCompass();
 syncClock();
 setInterval(() => { if (!rec.on) syncClock(); }, 5 * 60 * 1000);
 

@@ -94,8 +94,12 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     shadow.position.y = 0.01;
     g.add(body, head, nose, shadow);
     const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.7 }));
-    scene.add(g, trail);
-    return { group: g, trail, heading: 0, last: null };
+    // where the phone's camera points: a see-through cone from the head
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.45, 2, 24, 1, true),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false }));
+    cone.visible = false;
+    scene.add(g, trail, cone);
+    return { group: g, trail, cone, heading: 0, last: null };
   }
 
   let dynSig = null;
@@ -135,17 +139,26 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       let f = figures.get(id);
       if (!f) { f = makeFigure(t.color); figures.set(id, f); }
       const p = P(t.pos.x, t.pos.y, 0);
-      if (f.last && f.last.distanceTo(p) > 0.03) f.heading = Math.atan2(p.x - f.last.x, p.z - f.last.z);
+      const dir = !labelPos && state.dir ? state.dir : null;   // the phone carries the first tag
+      if (dir) f.heading = Math.atan2(Math.cos(dir.angle), -Math.sin(dir.angle));   // faces where the phone points
+      else if (f.last && f.last.distanceTo(p) > 0.03) f.heading = Math.atan2(p.x - f.last.x, p.z - f.last.z);   // or where it walks
       f.last = p.clone();
       f.group.position.copy(p);
       f.group.rotation.y = f.heading;
+      f.cone.visible = !!dir;
+      if (dir) {
+        const d = new THREE.Vector3(Math.cos(dir.pitch) * Math.cos(dir.angle), Math.sin(dir.pitch), -Math.cos(dir.pitch) * Math.sin(dir.angle));
+        const eye = p.clone().setY(FIGURE_HEIGHT - 0.15);
+        f.cone.position.copy(eye).addScaledVector(d, 1);   // the cone is 2 m long, its tip at the eye
+        f.cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().negate());
+      }
       f.group.visible = true;
       const pts = state.showTrail ? t.trail.map(q => P(q.x, q.y, 0).setY(0.03)) : [];
       f.trail.geometry.dispose();
       f.trail.geometry = new THREE.BufferGeometry().setFromPoints(pts);
       if (!labelPos) { labelPos = p.clone().setY(FIGURE_HEIGHT + 0.25); labelText = id + (state.look ? ' · ' + state.look : ''); }
     }
-    for (const [id, f] of figures) if (!seen.has(id)) { f.group.visible = false; f.trail.geometry = new THREE.BufferGeometry(); }
+    for (const [id, f] of figures) if (!seen.has(id)) { f.group.visible = false; f.cone.visible = false; f.trail.geometry = new THREE.BufferGeometry(); }
     // label above the first figure's head
     if (labelPos) {
       const v = labelPos.project(camera);
@@ -175,7 +188,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     lastFrame = now;
     controls.update();
     const state = getState();
-    let key = `${state.look}|${state.showTrail}|${dynSig}`;
+    let key = `${state.look}|${state.showTrail}|${dynSig}|${state.dir ? state.dir.angle.toFixed(3) + ',' + state.dir.pitch.toFixed(3) : ''}`;
     for (const [id, t] of state.tags) if (t.pos) key += `|${id}:${t.pos.x},${t.pos.y},${t.trail.length}`;
     if (key !== lastStateKey) { lastStateKey = key; needsRender = true; }
     if (needsRender) updateDynamic(state);

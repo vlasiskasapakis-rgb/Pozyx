@@ -31,6 +31,13 @@ for the track; the measured height is left out.
 | Material Suffix | Material name = image name + this (default `_MAT`). |
 | Look Color, Look Strength, Use Emission, Fade Time | How the looked-at materials change. |
 
+## Phone direction
+
+When the export has the phone's direction (AR viewer running, compass set up
+in the live map), the visitor turns to face where the phone pointed (**Turn To
+Phone**). Drag a Camera into **View Camera** to see from the visitor's eyes
+(**Eye Height**, default 1.55 m) in the phone's direction.
+
 ## Image materials
 
 For an image called `MIRO_D5` in the AR editor, name the material `MIRO_D5_MAT`.

@@ -189,6 +189,21 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    model panel lists which AR images were found, and "Names in the model"
    shows the model's texture and material names to compare.
 
+## 7. Phone direction
+
+The AR viewer reads the phone's own orientation sensors (compass-based) about
+5 times a second while the camera runs and saves where the back camera points
+(table `phone_pose`: heading 0-360° from north, pitch up/down, roll) on the
+server clock, under the session. The live map shows it live (via `ar_live`)
+and in replays: the figure in the Room view turns to face it with a view cone,
+and the top and 3D views draw an arrow on the first tag (the phone's tag).
+
+Set up once: in Room view → **Compass**, hold the phone (AR viewer running) at
+A1 with its back camera pointing at A2 and click **Phone points along A1 → A2
+now** (or type the compass bearing of A1 → A2). Exports include
+`xAxisHeading` and `orientation`; Unity uses them (see `unity/README.md`).
+Indoor compasses can be off by 10-30° near metal and electronics.
+
 ## Syncing tips
 
 - Both files use the same `unix_ms`, so rows can be matched directly.

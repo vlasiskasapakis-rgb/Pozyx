@@ -6,6 +6,9 @@
 //   plus a suffix (default "_MAT", e.g. image "MIRO_D5" -> material "MIRO_D5_MAT") turns greenish.
 //   Matching ignores upper/lower case, and spaces or dashes in image names count as "_".
 // - Shows a small player: Play/Pause, timeline, speed, the current look and the last phone tap.
+// - When the file has the phone's direction (AR viewer + compass set up in the live map), the
+//   visitor turns to face where the phone pointed, and an optional View Camera looks that way
+//   from eye height.
 //
 // Setup: add this script to an empty GameObject, drag the exported .json file into "Session Json"
 // (or set "Json Path"), then press Play. Space = play/pause.
@@ -26,12 +29,15 @@ using UnityEngine;
     public long startUnixMs; public long endUnixMs;
 }
 [Serializable] public class PozyxTap { public float t; public string label; public long unixMs; }
+[Serializable] public class PozyxOrientation { public float t; public float heading; public float pitch; public float roll; }
 [Serializable] public class PozyxSessionFile
 {
     public string format; public int version; public float fixedHeight; public float phoneTimeShift;
     public PozyxSessionInfo session; public PozyxRecordingInfo recording;
     public PozyxAnchor[] anchors; public string[] tags; public PozyxPosition[] positions;
     public PozyxLook[] looks; public PozyxTap[] taps;
+    public float xAxisHeading = -1f;   // compass bearing of the room's x axis (A1 -> A2); -1 = not set up
+    public PozyxOrientation[] orientation;
 }
 
 public class PozyxReplay : MonoBehaviour
@@ -57,6 +63,14 @@ public class PozyxReplay : MonoBehaviour
     [Tooltip("Other tags in the recording get a small sphere each")]
     public bool showOtherTags = true;
     public bool showAnchors = true;
+
+    [Header("Phone direction")]
+    [Tooltip("Turn the visitor to face where the phone pointed (when the file has directions)")]
+    public bool turnToPhone = true;
+    [Tooltip("Optional: a camera placed at the visitor's eyes, looking where the phone pointed")]
+    public Transform viewCamera;
+    [Tooltip("Height of the View Camera above the floor, in meters")]
+    public float eyeHeight = 1.55f;
 
     [Header("Playback")]
     public bool playOnStart = true;
@@ -104,6 +118,10 @@ public class PozyxReplay : MonoBehaviour
         if (Data.recording.duration <= 0f) Data.recording.duration = Data.positions[Data.positions.Length - 1].t;
         Data.looks = Data.looks ?? new PozyxLook[0];
         Data.taps = Data.taps ?? new PozyxTap[0];
+        Data.orientation = Data.orientation ?? new PozyxOrientation[0];
+        Array.Sort(Data.orientation, (a, b) => a.t.CompareTo(b.t));
+        if (Data.orientation.Length > 0 && Data.xAxisHeading < 0f)
+            Debug.LogWarning("PozyxReplay: the file has phone directions, but the compass was not set up in the live map (A1 -> A2), so they are not used.");
 
         // one track per tag, in time order
         var byTag = new Dictionary<string, Track>();
@@ -228,6 +246,19 @@ public class PozyxReplay : MonoBehaviour
         foreach (var tr in tracks)
             if (tr.target != null) tr.target.position = PositionAt(tr.points, t);
 
+        // the phone carries the first tag: turn the visitor, and point the View Camera
+        if (tracks.Count > 0 && DirectionAt(t, out Vector3 look))
+        {
+            var flat = new Vector3(look.x, 0f, look.z);
+            if (turnToPhone && tracks[0].target != null && flat.sqrMagnitude > 1e-6f) tracks[0].target.rotation = Quaternion.LookRotation(flat.normalized, Vector3.up);
+            if (viewCamera != null)
+            {
+                var p = PositionAt(tracks[0].points, t);
+                viewCamera.position = new Vector3(p.x, 0f, p.z) + Vector3.up * eyeHeight + (roomOrigin != null ? roomOrigin.position.y * Vector3.up : Vector3.zero);
+                viewCamera.rotation = Quaternion.LookRotation(look, Vector3.up);
+            }
+        }
+
         // which images are being looked at now
         var active = new HashSet<string>();
         currentLookText = "";
@@ -261,6 +292,34 @@ public class PozyxReplay : MonoBehaviour
             if (tint.weight > 0f) tint.mat.EnableKeyword("_EMISSION");
             tint.mat.SetColor("_EmissionColor", tint.emission + lookColor * (tint.weight * 0.6f));
         }
+    }
+
+    // Where the phone pointed at time t, as a direction in the room; false when unknown
+    public bool DirectionAt(float t, out Vector3 dir)
+    {
+        dir = Vector3.forward;
+        var o = Data.orientation;
+        if (o.Length == 0 || Data.xAxisHeading < 0f) return false;
+        int lo = 0, hi = o.Length - 1;
+        while (hi - lo > 1) { int mid = (lo + hi) / 2; if (o[mid].t <= t) lo = mid; else hi = mid; }
+        PozyxOrientation a = o[lo], b = o[hi];
+        float heading, pitch;
+        if (t <= a.t) { if (a.t - t > 2f) return false; heading = a.heading; pitch = a.pitch; }
+        else if (t >= b.t) { if (t - b.t > 2f) return false; heading = b.heading; pitch = b.pitch; }
+        else
+        {
+            if (b.t - a.t > 2f) return false;
+            float k = (t - a.t) / (b.t - a.t);
+            float dh = Mathf.Repeat(b.heading - a.heading + 180f, 360f) - 180f;
+            heading = a.heading + dh * k;
+            pitch = a.pitch + (b.pitch - a.pitch) * k;
+        }
+        // compass bearing -> angle from the room's x axis (counter-clockwise, Pozyx x, y), then to Unity like positions
+        float ang = (Data.xAxisHeading - heading) * Mathf.Deg2Rad, pr = pitch * Mathf.Deg2Rad;
+        float px = Mathf.Cos(ang) * Mathf.Cos(pr), py = Mathf.Sin(ang) * Mathf.Cos(pr);
+        var local = Quaternion.Euler(0f, rotationY, 0f) * new Vector3(mirrorX ? -px : px, Mathf.Sin(pr), py);
+        dir = roomOrigin != null ? roomOrigin.TransformDirection(local) : local;
+        return true;
     }
 
     // Position at time t, between the two nearest samples
