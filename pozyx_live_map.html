@@ -849,7 +849,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-02d';
+const CODE_VERSION = '2026-11-02e';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1469,8 +1469,9 @@ async function uploadRoom(file) {
   if (!hasDb()) return;
   roomInfo(`Uploading ${file.name} (${(file.size / 1e6).toFixed(1)} MB)…`);
   try {
-    const path = `room/${Date.now().toString(36)}_${file.name.replace(/[^A-Za-z0-9._-]+/g, '_')}`;
-    await pozyxDb.uploadFile(path, file, 'model/gltf-binary');
+    const packed = await packModel(file);
+    const path = `room/${Date.now().toString(36)}_${file.name.replace(/[^A-Za-z0-9._-]+/g, '_')}${packed.ext}`;
+    await pozyxDb.uploadFile(path, packed.blob, packed.ext ? 'application/gzip' : 'model/gltf-binary');
     const oldFiles = roomFilePaths();
     roomCfg = { offset_x: 0, offset_y: 0, offset_z: 0, rotation_deg: 0, scale: 1, ...(roomCfg || {}),
       id: 'current', model_path: path, model_name: file.name, model_type: 'glb', model_files: null, z_up: null, updated_at_unix_ms: Date.now() };
@@ -1481,6 +1482,19 @@ async function uploadRoom(file) {
     return;
   }
   await loadRoomConfig();
+}
+// Supabase's free plan takes files up to 50 MB. Bigger model files are gzip-compressed in the
+// browser (FBX usually shrinks to a quarter or less) and unpacked again when loading.
+const MAX_FILE = 50 * 1024 * 1024;
+async function packModel(file) {
+  if (file.size <= MAX_FILE * 0.95) return { blob: file, ext: '' };
+  roomInfo(`Compressing ${file.name} (${(file.size / 1e6).toFixed(0)} MB)…`);
+  const blob = await new Response(file.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+  if (blob.size > MAX_FILE) {
+    throw new Error(`${file.name} is ${(blob.size / 1e6).toFixed(0)} MB even compressed, more than the 50 MB Supabase allows per file. ` +
+      'Make the model lighter (remove hidden or detailed objects, or decimate in Blender), or raise the upload limit in Supabase (paid plans).');
+  }
+  return { blob, ext: '.gz' };
 }
 // every stored file of the current room model, to delete when it is replaced
 function roomFilePaths() {
@@ -1495,7 +1509,8 @@ async function uploadRoomFbx(fileList) {
   const all = [...fileList];
   const fbx = all.find(f => /\.fbx$/i.test(f.name));
   if (!fbx) { roomInfo('No .fbx file in that folder. Pick the folder that holds the FBX and its textures.', true); return; }
-  const textures = all.filter(f => IMAGE_FILE.test(f.name));
+  const tooBig = all.filter(f => IMAGE_FILE.test(f.name) && f.size > MAX_FILE).map(f => f.name);   // over Supabase's 50 MB
+  const textures = all.filter(f => IMAGE_FILE.test(f.name) && f.size <= MAX_FILE);
   const tiffs = all.filter(f => /\.tiff?$/i.test(f.name)).length;
   const stamp = Date.now().toString(36);
   const safe = (n) => n.replace(/[^A-Za-z0-9._-]+/g, '_');
@@ -1505,8 +1520,10 @@ async function uploadRoomFbx(fileList) {
   const show = () => roomInfo(`Uploading ${fbx.name} and ${textures.length} textures… ${done} of ${total}${failed ? ` (${failed} failed)` : ''}`);
   show();
   try {
-    const fbxPath = `room/${stamp}/${safe(fbx.name)}`;
-    await pozyxDb.uploadFile(fbxPath, fbx, 'application/octet-stream');
+    const packed = await packModel(fbx);
+    const fbxPath = `room/${stamp}/${safe(fbx.name)}${packed.ext}`;
+    roomInfo(`Uploading ${fbx.name}${packed.ext ? ` (compressed to ${(packed.blob.size / 1e6).toFixed(1)} MB)` : ''} and ${textures.length} textures…`);
+    await pozyxDb.uploadFile(fbxPath, packed.blob, packed.ext ? 'application/gzip' : 'application/octet-stream');
     done++;
     const queue = [...textures];
     const worker = async () => {
@@ -1530,9 +1547,10 @@ async function uploadRoomFbx(fileList) {
     return;
   }
   await loadRoomConfig();
-  if (failed || tiffs) {
+  if (failed || tiffs || tooBig.length) {
     roomInfo(`${$('roomInfo').textContent}.${failed ? ` ${failed} texture uploads failed: upload the folder again.` : ''}` +
-      `${tiffs ? ` ${tiffs} TIFF textures were skipped: browsers cannot show TIFF, save them as JPG or PNG.` : ''}`, !!failed);
+      `${tiffs ? ` ${tiffs} TIFF textures were skipped: browsers cannot show TIFF, save them as JPG or PNG.` : ''}` +
+      `${tooBig.length ? ` Skipped, over 50 MB: ${tooBig.join(', ')} (save smaller, e.g. as JPG at 4096 px).` : ''}`, !!(failed || tooBig.length));
   }
 }
 // The Pozyx origin is the floor below A1 and x points to A2, so clicking those two spots in the

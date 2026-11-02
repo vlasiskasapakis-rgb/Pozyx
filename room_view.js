@@ -204,6 +204,18 @@ export function createRoomView(container, getState) {
   // GLB: one file. FBX: opts.files maps texture file names (lower case) to their addresses, because
   // an FBX refers to its textures by the path they had on the computer that made it.
   // Returns {zUp} for FBX: whether the model was found (or set) to be Z-up.
+  // Large model files are stored gzip-compressed (name ending .gz): download and unpack them here
+  async function fetchGunzip(url, onProgress) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`could not download the model (${res.status})`);
+    const total = +res.headers.get('content-length') || 0;
+    let loaded = 0;
+    const counted = res.body.pipeThrough(new TransformStream({
+      transform(chunk, ctl) { loaded += chunk.length; if (onProgress && total) onProgress({ loaded, total }); ctl.enqueue(chunk); },
+    }));
+    return new Response(counted.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+  }
+
   async function loadModel(url, onProgress, opts = {}) {
     const progress = (e) => { if (onProgress && e.total) onProgress(e.loaded / e.total); };
     let root, result = {};
@@ -216,7 +228,8 @@ export function createRoomView(container, getState) {
         return (opts.files && opts.files[base]) || u;
       });
       const texturesDone = new Promise((res) => { manager.onLoad = res; });
-      root = await new FBXLoader(manager).loadAsync(url, progress);
+      const fbxLoader = new FBXLoader(manager);
+      root = url.endsWith('.gz') ? fbxLoader.parse(await fetchGunzip(url, progress), '') : await fbxLoader.loadAsync(url, progress);
       // some exporters leave out surface normals, which makes everything black: work them out
       root.traverse((o) => { if (o.isMesh && !o.geometry.attributes.normal) o.geometry.computeVertexNormals(); });
       // FBX units: UnitScaleFactor = centimeters per unit (1 = cm, 100 = m); assume cm when missing
@@ -230,7 +243,7 @@ export function createRoomView(container, getState) {
       setUpright(zUp);
       texturesDone.then(() => { if (model === root) { indexGlow(); if (opts.onTextures) opts.onTextures(); } });
     } else {
-      root = (await loader.loadAsync(url, progress)).scene;
+      root = (url.endsWith('.gz') ? await loader.parseAsync(await fetchGunzip(url, progress), '') : await loader.loadAsync(url, progress)).scene;
       setUpright(false);
     }
     if (model) upright.remove(model);
