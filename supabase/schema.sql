@@ -268,3 +268,6 @@ create policy "pages update" on room_model for update to anon using (true) with 
 alter table room_model add column if not exists model_type  text not null default 'glb';
 alter table room_model add column if not exists model_files jsonb;
 alter table room_model add column if not exists z_up        boolean;   -- empty = detect when loading
+
+-- Make the API notice new tables and columns straight away
+notify pgrst, 'reload schema';

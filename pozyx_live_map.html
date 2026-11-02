@@ -1556,7 +1556,7 @@ async function uploadRoomFbx(fileList) {
     await pozyxDb.upsert('room_model', [roomCfg], 'id');
     pozyxDb.removeFiles(oldFiles).catch(() => {});
   } catch (e) {
-    roomInfo(`Could not upload: ${/model_type|model_files|z_up/.test(e.message) ? 'run the updated supabase/schema.sql in Supabase first' : e.message}`, true);
+    roomInfo(`Could not upload: ${/model_type|model_files|z_up/.test(e.message) ? `run the updated supabase/schema.sql in Supabase first (${e.message})` : e.message}`, true);
     return;
   }
   await loadRoomConfig();
