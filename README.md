@@ -189,18 +189,28 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    model panel lists which AR images were found, and "Names in the model"
    shows the model's texture and material names to compare.
 4. **Plan anchors (before installing)**: tick **Show anchor plan and
-   coverage** to see proposed anchors (orange markers with their height) in
-   the model and the floor coloured by how many anchors a phone held at 1.3 m
+   coverage**. The page first reads the rooms of the model: spaces closed off
+   by walls (and the wall above a door) at 2.2 m become Room 1, Room 2, …
+   (biggest first). Lower partitions and display cases do not split a room;
+   the outside of the building and spaces smaller than 3 m² are left out. Each
+   room's floor is tinted in its own colour with its name on it.
+   Choose the room to plan in the **Room** list (it shows the size), by
+   clicking a room's name in the model, or with **Pick in model** and a click
+   on its floor. ↻ reads the rooms again (after moving the model).
+   The chosen room shows the proposed anchors (orange markers with their
+   height) and its floor coloured by how many anchors a phone held at 1.3 m
    can see in a straight line: green 4 or more (good 3D), yellow 3 (2.5D only),
    red 2 or fewer. Walls, partitions and display cases in the model block the
    line, so the colours show where tracking will be weak.
-   **Suggest layout** puts four anchors in the corners, alternating 2.7 m and
-   1.0 m (the height difference is what gives Pozyx its height reading
-   without the ceiling), plus one at 2.7 m on a stand in the middle. Change a
-   height in the list, or **Move** an anchor and click a wall or the floor in
-   the model (on a wall it sits 25 cm out). **Pick room centre** chooses which
-   room to plan when the model has several. The plan is saved per computer and
-   per model; the panel also warns when two anchors are more than 15 m apart.
+   **Suggest layout** puts four anchors in the room's corners (square to its
+   walls, also for turned or L-shaped rooms), alternating 2.7 m and 1.0 m (the
+   height difference is what gives Pozyx its height reading without the
+   ceiling), plus one at 2.7 m on a stand in the middle. Change a height in
+   the list, or **Move** an anchor and click a wall or the floor in the model
+   (on a wall it sits 25 cm out). Every room keeps its own plan (saved per
+   computer and per model), and the last room you planned is chosen again.
+   The panel warns when two anchors are more than 15 m apart. If the model
+   has no closed rooms, the whole model is planned as one space.
 
 ## 7. Phone direction
 

@@ -336,6 +336,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       setUpright(false);
     }
     planMeshes = [];
+    clearRooms();
     const merged = mergeByMaterial(root);   // fewer, bigger parts draw much faster
     stats = { parts: merged.before, drawn: merged.group.children.length };
     root = merged.group;
@@ -513,7 +514,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   let planCentre = null;   // a floor point inside the room being planned (the model's middle unless picked)
   // The room's inside: from its centre at 1.5 m, the nearest wall to the left, right, front and back
   function roomInterior() {
-    if (!planMeshes.length || !planMeshes[0].geometry.boundsTree) prepareRays();
+    if (!planMeshes.length) prepareRays();
     const b = modelBox(), c = planCentre ? planCentre.clone() : b.getCenter(new THREE.Vector3());
     planFloorY = b.min.y;
     const y = planFloorY + 1.5;
@@ -539,13 +540,208 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   }
   // Four corners alternating high and low, and a high anchor on a stand in the middle
   function suggestPlan() {
+    const room = rooms.find(r => r.id === roomId);
+    if (room) return suggestForRoom(room);
     const r = roomInterior(), i = 0.3;
     const x0 = r.x0 + i, x1 = r.x1 - i, z0 = r.z0 + i, z1 = r.z1 - i;
     return [{ x: x0, z: z1, h: 2.7 }, { x: x1, z: z1, h: 1.0 }, { x: x1, z: z0, h: 2.7 }, { x: x0, z: z0, h: 1.0 }, { x: (x0 + x1) / 2, z: (z0 + z1) / 2, h: 2.7 }];
   }
   // Click on the floor of the room to plan (when the model has several rooms)
   function pickPlanCentre(done) {
-    pick((local, hit) => { planCentre = hit.world.clone(); if (done) done(); });
+    pick((local, hit) => {
+      planCentre = hit.world.clone();
+      const r = roomAt(planCentre);
+      if (r) selectRoom(r.id);
+      if (done) done(r ? r.id : null);
+    });
+  }
+
+  /* ---------- reading the rooms of the model ----------
+     A grid over the model at ROOM_PROBE_H (above door height, below the ceiling): two neighbouring
+     spots are in the same room when nothing is between them at that height. Partitions and display
+     cases are lower, so they do not split a room; walls and the wall above a door do. Areas where
+     looking sideways finds nothing (outside the building) and tiny areas (inside walls) are dropped. */
+  const ROOM_PROBE_H = 2.2, ROOM_MIN_AREA = 3;
+  const ROOM_COLORS = [0x4c8bf5, 0xa66cf0, 0x22b8c9, 0xe06aa4, 0x8fae3a, 0xd99a2b, 0x6f7bd9, 0x3fae8a];
+  let rooms = [], roomId = null, roomGrid = null, roomLabels = [], roomsMesh = null, onRoomClick = null;
+  const roomsGroup = new THREE.Group();
+  planGroup.add(roomsGroup);
+  function clearRooms() {
+    rooms = []; roomId = null; roomGrid = null;
+    roomsGroup.clear();
+    roomLabels.forEach(l => l.remove());
+    roomLabels = [];
+  }
+  async function findRooms(progress) {
+    clearRooms();
+    if (!model) return [];
+    prepareRays();
+    const b = modelBox();
+    planFloorY = b.min.y;
+    const W = b.max.x - b.min.x, D = b.max.z - b.min.z;
+    const cell = Math.max(0.3, Math.sqrt(W * D / 30000));   // at most ~30 000 spots
+    const nx = Math.max(1, Math.ceil(W / cell)), nz = Math.max(1, Math.ceil(D / cell)), n = nx * nz;
+    const y = planFloorY + Math.min(ROOM_PROBE_H, (b.max.y - planFloorY) * 0.8);
+    const cx = i => b.min.x + (i + 0.5) * cell, cz = j => b.min.z + (j + 0.5) * cell;
+    const floorAt = new Float32Array(n).fill(NaN), openX = new Uint8Array(n), openZ = new Uint8Array(n);
+    const o = new THREE.Vector3(), down = new THREE.Vector3(0, -1, 0), px = new THREE.Vector3(1, 0, 0), pz = new THREE.Vector3(0, 0, 1);
+    let t0 = performance.now();
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < nz; j++) {
+        const k = i * nz + j;
+        o.set(cx(i), y, cz(j));
+        const d = firstHit(o, down, y - planFloorY + 0.3);
+        if (d === null) continue;
+        floorAt[k] = y - d;
+        if (i + 1 < nx) openX[k] = firstHit(o, px, cell) === null ? 1 : 0;
+        if (j + 1 < nz) openZ[k] = firstHit(o, pz, cell) === null ? 1 : 0;
+      }
+      if (performance.now() - t0 > 25) {
+        if (progress) progress(Math.round(i / nx * 90));
+        await new Promise(r => setTimeout(r));
+        t0 = performance.now();
+      }
+    }
+    // join open neighbours into areas
+    const lab = new Int32Array(n).fill(-1), areas = [];
+    for (let k0 = 0; k0 < n; k0++) {
+      if (lab[k0] >= 0 || Number.isNaN(floorAt[k0])) continue;
+      const id = areas.length, list = [k0];
+      lab[k0] = id;
+      for (let q = 0; q < list.length; q++) {
+        const k = list[q], i = Math.floor(k / nz), j = k % nz;
+        const nb = [];
+        if (i + 1 < nx && openX[k]) nb.push(k + nz);
+        if (i > 0 && openX[k - nz]) nb.push(k - nz);
+        if (j + 1 < nz && openZ[k]) nb.push(k + 1);
+        if (j > 0 && openZ[k - 1]) nb.push(k - 1);
+        for (const m of nb) if (lab[m] < 0 && !Number.isNaN(floorAt[m])) { lab[m] = id; list.push(m); }
+      }
+      areas.push(list);
+    }
+    // keep real rooms
+    const dirs = [px, pz, new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 0, -1)];
+    const found = [];
+    areas.forEach((list, id) => {
+      if (list.length * cell * cell < ROOM_MIN_AREA) return;
+      const step = Math.max(1, Math.floor(list.length / 30));
+      let tried = 0, open = 0;
+      for (let q = 0; q < list.length; q += step) {
+        const k = list[q];
+        o.set(cx(Math.floor(k / nz)), y, cz(k % nz));
+        tried++;
+        if (dirs.some(d => firstHit(o, d, 1000) === null)) open++;
+      }
+      if (open / tried > 0.25) return;   // open to the outside: not a room
+      const cells = list.map(k => {
+        const fy = floorAt[k];
+        return { x: cx(Math.floor(k / nz)), z: cz(k % nz), fy, walk: fy - planFloorY < 0.4 };
+      });
+      if (cells.filter(c => c.walk).length < cells.length * 0.3) return;
+      found.push({ area: id, cells });
+    });
+    found.sort((p, q) => q.cells.length - p.cells.length);
+    rooms = found.map((r, idx) => describeRoom(r.cells, idx, cell));
+    const areaToRoom = new Map(found.map((r, idx) => [r.area, idx]));
+    roomGrid = { b, cell, nx, nz, lab, areaToRoom };
+    renderRooms();
+    if (progress) progress(100);
+    return rooms.map(r => ({ id: r.id, name: r.name, area: r.area, w: r.w, d: r.d, centre: r.centre }));
+  }
+  // Size and main directions of a room: the turn (0-89°) whose bounding rectangle is smallest, so a
+  // rotated room still gets its real corners and an L-shaped one stays square to its walls
+  function describeRoom(cells, idx, cell) {
+    let mx = 0, mz = 0;
+    for (const c of cells) { mx += c.x; mz += c.z; }
+    mx /= cells.length; mz /= cells.length;
+    let bestArea = Infinity, u, v, u0, u1, v0, v1;
+    for (let deg = 0; deg < 90; deg += 3) {
+      const a = deg * Math.PI / 180, cu = [Math.cos(a), Math.sin(a)], cv = [-cu[1], cu[0]];
+      let a0 = Infinity, a1 = -Infinity, e0 = Infinity, e1 = -Infinity;
+      for (const c of cells) {
+        const p = c.x * cu[0] + c.z * cu[1], q = c.x * cv[0] + c.z * cv[1];
+        if (p < a0) a0 = p; if (p > a1) a1 = p; if (q < e0) e0 = q; if (q > e1) e1 = q;
+      }
+      if ((a1 - a0) * (e1 - e0) < bestArea - 1e-6) { bestArea = (a1 - a0) * (e1 - e0); u = cu; v = cv; u0 = a0; u1 = a1; v0 = e0; v1 = e1; }
+    }
+    // the middle: the walkable spot nearest the average (an L-shaped room's average can be outside it)
+    let centre = null, best = Infinity;
+    for (const c of cells) {
+      const d = (c.x - mx) ** 2 + (c.z - mz) ** 2 + (c.walk ? 0 : 4);
+      if (d < best) { best = d; centre = c; }
+    }
+    return {
+      id: idx + 1, name: `Room ${idx + 1}`, cells, cell, u, v,
+      area: cells.length * cell * cell, w: u1 - u0 + cell, d: v1 - v0 + cell,
+      centre: { x: centre.x, z: centre.z }, color: ROOM_COLORS[idx % ROOM_COLORS.length],
+    };
+  }
+  function roomAt(p) {
+    if (!roomGrid) return null;
+    const { b, cell, nx, nz, lab, areaToRoom } = roomGrid;
+    const i0 = Math.floor((p.x - b.min.x) / cell), j0 = Math.floor((p.z - b.min.z) / cell);
+    // the clicked spot, or the nearest spot of a room around it (a click on a wall or a case)
+    for (let r = 0; r <= 3; r++) {
+      for (let i = i0 - r; i <= i0 + r; i++) for (let j = j0 - r; j <= j0 + r; j++) {
+        if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
+        const idx = areaToRoom.get(lab[i * nz + j]);
+        if (idx !== undefined) return rooms[idx];
+      }
+    }
+    return null;
+  }
+  function selectRoom(id) {
+    const r = rooms.find(x => x.id === id);
+    roomId = r ? r.id : null;
+    if (r) planCentre = new THREE.Vector3(r.centre.x, planFloorY, r.centre.z);
+    renderRooms();
+    return !!r;
+  }
+  // Corners of the room along its own directions, alternating high and low, plus the middle
+  function suggestForRoom(r) {
+    const corner = (su, sv) => {
+      let best = null, bv = -Infinity;
+      for (const c of r.cells) {
+        const val = su * (c.x * r.u[0] + c.z * r.u[1]) + sv * (c.x * r.v[0] + c.z * r.v[1]);
+        if (val > bv) { bv = val; best = c; }
+      }
+      return best;
+    };
+    const cs = [corner(-1, 1), corner(1, 1), corner(1, -1), corner(-1, -1)];
+    return [...cs.map((c, i) => ({ x: c.x, z: c.z, h: i % 2 ? 1.0 : 2.7 })), { x: r.centre.x, z: r.centre.z, h: 2.7 }];
+  }
+  // Every room's floor tinted in its own colour with a clickable name; the chosen one shows coverage
+  function renderRooms() {
+    roomsGroup.clear();
+    roomLabels.forEach(l => l.remove());
+    roomLabels = [];
+    const others = rooms.filter(r => r.id !== roomId);
+    const total = others.reduce((n, r) => n + r.cells.length, 0);
+    if (total) {
+      const cell = rooms[0].cell;
+      const quad = new THREE.PlaneGeometry(cell * 0.92, cell * 0.92).rotateX(-Math.PI / 2);
+      roomsMesh = new THREE.InstancedMesh(quad, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.3, depthWrite: false }), total);
+      const mtx = new THREE.Matrix4(), col = new THREE.Color();
+      let k = 0;
+      for (const r of others) for (const c of r.cells) {
+        mtx.makeTranslation(c.x, c.fy + 0.02, c.z);
+        roomsMesh.setMatrixAt(k, mtx);
+        roomsMesh.setColorAt(k++, col.set(r.color));
+      }
+      roomsGroup.add(roomsMesh);
+    }
+    for (const r of rooms) {
+      const l = document.createElement('div');
+      l.className = 'roomlabel roomtag' + (r.id === roomId ? ' chosen' : '');
+      l.textContent = r.id === roomId ? `${r.name} (planning)` : r.name;
+      l.style.borderColor = '#' + new THREE.Color(r.color).getHexString();
+      l.title = `${r.area.toFixed(0)} m², about ${r.w.toFixed(1)} × ${r.d.toFixed(1)} m. Click to plan this room.`;
+      l.hidden = !planGroup.visible;
+      l.onclick = () => { if (onRoomClick) onRoomClick(r.id); };
+      container.appendChild(l);
+      roomLabels.push(l);
+    }
+    needsRender = true;
   }
   function setPlan(list) {
     plan = list.map(a => ({ x: +a.x, z: +a.z, h: +a.h }));
@@ -555,11 +751,14 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   function showPlan(on) {
     planGroup.visible = !!on;
     for (const l of planLabels) l.hidden = !on;
+    for (const l of roomLabels) l.hidden = !on;
     needsRender = true;
     if (on) computeCoverage();
   }
   function renderPlan() {
     planGroup.clear();
+    planGroup.add(roomsGroup);
+    if (coverageMesh) planGroup.add(coverageMesh);
     planLabels.forEach(l => l.remove());
     planLabels = [];
     if (!model) return;
@@ -582,6 +781,14 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   }
   function placePlanLabels() {
     if (!planGroup.visible) return;
+    rooms.forEach((r, i) => {
+      const l = roomLabels[i];
+      if (!l) return;
+      const v = new THREE.Vector3(r.centre.x, planFloorY + 0.4, r.centre.z).project(camera);
+      l.hidden = v.z > 1;
+      l.style.left = ((v.x + 1) / 2 * container.clientWidth) + 'px';
+      l.style.top = ((1 - v.y) / 2 * container.clientHeight) + 'px';
+    });
     plan.forEach((a, i) => {
       const v = new THREE.Vector3(a.x, planFloorY + a.h + 0.25, a.z).project(camera), l = planLabels[i];
       if (!l) return;
@@ -606,21 +813,29 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   // Line of sight is checked against the model on both sides of every surface, sped up with a
   // bounding volume tree per mesh (built once)
   let planMeshes = [];
-  const inv = new THREE.Matrix4(), localRay = new THREE.Ray();
+  const localRay = new THREE.Ray(), worldRay = new THREE.Ray(), hitBox = new THREE.Vector3();
   function prepareRays() {
     planMeshes = [];
     model.updateMatrixWorld(true);
     model.traverse((o) => {
       if (!o.isMesh || !o.geometry.attributes.position) return;
       if (!o.geometry.boundsTree) o.geometry.boundsTree = new MeshBVH(o.geometry);
+      o.userData.inv = o.matrixWorld.clone().invert();
+      o.userData.box = new THREE.Box3().setFromObject(o).expandByScalar(0.01);
       planMeshes.push(o);
     });
   }
   function firstHit(origin, dir, far) {   // distance to the nearest surface along dir, or null
     let best = null;
+    worldRay.set(origin, dir);
     for (const m of planMeshes) {
-      inv.copy(m.matrixWorld).invert();
-      localRay.set(origin, dir).applyMatrix4(inv);
+      // skip parts whose box the ray misses or only reaches beyond what was already found
+      // (from inside a box, intersectBox gives the exit point, so that case is never skipped)
+      if (!m.userData.box.containsPoint(origin)) {
+        const bh = worldRay.intersectBox(m.userData.box, hitBox);
+        if (!bh || bh.distanceTo(origin) > (best === null ? far : best)) continue;
+      }
+      localRay.copy(worldRay).applyMatrix4(m.userData.inv);
       const h = m.geometry.boundsTree.raycastFirst(localRay, THREE.DoubleSide);
       if (!h) continue;
       const d = h.point.applyMatrix4(m.matrixWorld).distanceTo(origin);
@@ -634,12 +849,21 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     if (!model || !planGroup.visible || !plan.length) return;
     await new Promise(r => setTimeout(r, 30));   // let several quick changes settle
     if (run !== coverageRun) return;
-    if (!planMeshes.length || !planMeshes[0].geometry.boundsTree) prepareRays();
-    const r = roomInterior(), down = new THREE.Vector3(0, -1, 0), cells = [];
+    prepareRays();
+    const room = rooms.find(x => x.id === roomId);
+    const down = new THREE.Vector3(0, -1, 0), cells = [];
+    planFloorY = modelBox().min.y;
+    let spots, size = PLAN_CELL;
+    if (room) { spots = room.cells.filter(c => c.walk); size = room.cell; }
+    else {   // no rooms read: a grid inside the walls around the centre
+      const r = roomInterior();
+      spots = [];
+      for (let x = r.x0 + PLAN_CELL / 2; x < r.x1; x += PLAN_CELL) for (let z = r.z0 + PLAN_CELL / 2; z < r.z1; z += PLAN_CELL) spots.push({ x, z });
+    }
     const tops = plan.map(a => new THREE.Vector3(a.x, planFloorY + a.h, a.z));
     let t0 = performance.now();
-    for (let x = r.x0 + PLAN_CELL / 2; x < r.x1; x += PLAN_CELL) {
-      for (let z = r.z0 + PLAN_CELL / 2; z < r.z1; z += PLAN_CELL) {
+    for (const { x, z } of spots) {
+      {
         // the floor below this spot: the first surface under phone height, low enough to stand on
         const start = new THREE.Vector3(x, planFloorY + PLAN_PHONE_H, z);
         const fd = firstHit(start, down, PLAN_PHONE_H + 0.5);
@@ -650,7 +874,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
           const d = top.clone().sub(eye), len = d.length();
           if (firstHit(eye, d.normalize(), len - 0.2) === null) seen++;
         }
-        cells.push({ x, z, y: floorY + 0.02, seen });
+        cells.push({ x, z, y: floorY + 0.03, seen });
         if (performance.now() - t0 > 25) {   // keep the page responsive
           await new Promise(r => setTimeout(r));
           if (run !== coverageRun) return;
@@ -659,7 +883,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       }
     }
     if (coverageMesh) { planGroup.remove(coverageMesh); coverageMesh.geometry.dispose(); }
-    const quad = new THREE.PlaneGeometry(PLAN_CELL * 0.92, PLAN_CELL * 0.92).rotateX(-Math.PI / 2);
+    const quad = new THREE.PlaneGeometry(size * 0.92, size * 0.92).rotateX(-Math.PI / 2);
     coverageMesh = new THREE.InstancedMesh(quad, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.55, depthWrite: false }), Math.max(1, cells.length));
     const mtx = new THREE.Matrix4(), col = new THREE.Color();
     const count = { good: 0, ok: 0, bad: 0 };
@@ -675,7 +899,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     needsRender = true;
     let far = 0;
     for (let i = 0; i < tops.length; i++) for (let j = i + 1; j < tops.length; j++) far = Math.max(far, tops[i].distanceTo(tops[j]));
-    if (onCoverage) onCoverage({ ...count, total: cells.length, maxDistance: far });
+    if (onCoverage) onCoverage({ ...count, total: cells.length, maxDistance: far, room: room ? room.name : null });
   }
 
   // Two-point alignment: the caller asks for a click on the model; the point comes back in the
@@ -721,7 +945,10 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     get hasModel() { return !!model; },
     get model() { return model; },
     get stats() { return stats; },
-    suggestPlan, setPlan, showPlan, movePlanAnchor, pickPlanCentre,
+    suggestPlan, setPlan, showPlan, movePlanAnchor, pickPlanCentre, findRooms, selectRoom,
+    get roomId() { return roomId; },
+    roomAt(p) { const r = roomAt(p); return r ? r.id : null; },
+    set onRoomClick(fn) { onRoomClick = fn; },
     get planCentre() { return planCentre; },
     set planCentre(p) { planCentre = p ? new THREE.Vector3(p.x, p.y || 0, p.z) : null; },
     get plan() { return plan; },
