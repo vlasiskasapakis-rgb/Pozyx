@@ -849,7 +849,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-02e';
+const CODE_VERSION = '2026-11-02f';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1417,9 +1417,10 @@ async function loadRoomConfig() {
   try {
     const isFbx = roomCfg.model_type === 'fbx';
     const files = {};
-    for (const [name, path] of Object.entries(roomCfg.model_files || {})) files[name] = pozyxDb.fileUrl(path);
+    for (const [name, path] of Object.entries(roomCfg.model_files || {})) if (name !== ':parts') files[name] = pozyxDb.fileUrl(path);
+    const parts = ((roomCfg.model_files || {})[':parts'] || []).map(p => pozyxDb.fileUrl(p));
     const res = await room.loadModel(pozyxDb.fileUrl(roomCfg.model_path), (p) => roomInfo(`Loading ${roomCfg.model_name}… ${Math.round(p * 100)}%`),
-      isFbx ? { type: 'fbx', files, zUp: roomCfg.z_up, onTextures: showGlowMatches } : {});
+      isFbx ? { type: 'fbx', files, parts, zUp: roomCfg.z_up, onTextures: showGlowMatches } : { parts });
     if (isFbx && roomCfg.z_up == null) { roomCfg.z_up = res.zUp; saveRoomCfg(); }   // remember what was detected
     $('alUpright').checked = !!roomCfg.z_up;
     roomInfo(`Model: ${roomCfg.model_name}${isFbx ? ` with ${Object.keys(files).length} texture files` : ''}`);
@@ -1471,10 +1472,10 @@ async function uploadRoom(file) {
   try {
     const packed = await packModel(file);
     const path = `room/${Date.now().toString(36)}_${file.name.replace(/[^A-Za-z0-9._-]+/g, '_')}${packed.ext}`;
-    await pozyxDb.uploadFile(path, packed.blob, packed.ext ? 'application/gzip' : 'model/gltf-binary');
+    const parts = await uploadModelFile(path, packed, file.name);
     const oldFiles = roomFilePaths();
     roomCfg = { offset_x: 0, offset_y: 0, offset_z: 0, rotation_deg: 0, scale: 1, ...(roomCfg || {}),
-      id: 'current', model_path: path, model_name: file.name, model_type: 'glb', model_files: null, z_up: null, updated_at_unix_ms: Date.now() };
+      id: 'current', model_path: path, model_name: file.name, model_type: 'glb', model_files: parts ? { ':parts': parts } : null, z_up: null, updated_at_unix_ms: Date.now() };
     await pozyxDb.upsert('room_model', [roomCfg], 'id');
     pozyxDb.removeFiles(oldFiles).catch(() => {});
   } catch (e) {
@@ -1484,22 +1485,33 @@ async function uploadRoom(file) {
   await loadRoomConfig();
 }
 // Supabase's free plan takes files up to 50 MB. Bigger model files are gzip-compressed in the
-// browser (FBX usually shrinks to a quarter or less) and unpacked again when loading.
+// browser (an ASCII FBX shrinks a lot, a binary FBX less), and when still too big, uploaded in
+// pieces of 45 MB. The room view joins and unpacks them again when loading.
 const MAX_FILE = 50 * 1024 * 1024;
+const PIECE = 45 * 1024 * 1024;
 async function packModel(file) {
   if (file.size <= MAX_FILE * 0.95) return { blob: file, ext: '' };
   roomInfo(`Compressing ${file.name} (${(file.size / 1e6).toFixed(0)} MB)…`);
   const blob = await new Response(file.stream().pipeThrough(new CompressionStream('gzip'))).blob();
-  if (blob.size > MAX_FILE) {
-    throw new Error(`${file.name} is ${(blob.size / 1e6).toFixed(0)} MB even compressed, more than the 50 MB Supabase allows per file. ` +
-      'Make the model lighter (remove hidden or detailed objects, or decimate in Blender), or raise the upload limit in Supabase (paid plans).');
+  return blob.size < file.size * 0.9 ? { blob, ext: '.gz' } : { blob: file, ext: '' };   // keep compression only when it helps
+}
+// Uploads a packed model file; returns the paths of its pieces, or null when it is one file
+async function uploadModelFile(path, packed, label) {
+  const type = packed.ext ? 'application/gzip' : 'application/octet-stream';
+  if (packed.blob.size <= MAX_FILE) { await pozyxDb.uploadFile(path, packed.blob, type); return null; }
+  const count = Math.ceil(packed.blob.size / PIECE), parts = [];
+  for (let i = 0; i < count; i++) {
+    roomInfo(`Uploading ${label} (${(packed.blob.size / 1e6).toFixed(0)} MB) in ${count} pieces… piece ${i + 1} of ${count}`);
+    const part = `${path}.part${i + 1}`;
+    await pozyxDb.uploadFile(part, packed.blob.slice(i * PIECE, (i + 1) * PIECE), 'application/octet-stream');
+    parts.push(part);
   }
-  return { blob, ext: '.gz' };
+  return parts;
 }
 // every stored file of the current room model, to delete when it is replaced
 function roomFilePaths() {
   if (!roomCfg) return [];
-  return [roomCfg.model_path, ...Object.values(roomCfg.model_files || {})].filter(Boolean);
+  return [roomCfg.model_path, ...Object.values(roomCfg.model_files || {}).flat()].filter(Boolean);
 }
 // FBX: the folder with the .fbx and its texture files. The textures keep their file names, which
 // the FBX refers to and which light up when their image is looked at.
@@ -1523,7 +1535,8 @@ async function uploadRoomFbx(fileList) {
     const packed = await packModel(fbx);
     const fbxPath = `room/${stamp}/${safe(fbx.name)}${packed.ext}`;
     roomInfo(`Uploading ${fbx.name}${packed.ext ? ` (compressed to ${(packed.blob.size / 1e6).toFixed(1)} MB)` : ''} and ${textures.length} textures…`);
-    await pozyxDb.uploadFile(fbxPath, packed.blob, packed.ext ? 'application/gzip' : 'application/octet-stream');
+    const parts = await uploadModelFile(fbxPath, packed, fbx.name);
+    if (parts) files[':parts'] = parts;   // ":" cannot be in a file name, so this never clashes with a texture
     done++;
     const queue = [...textures];
     const worker = async () => {
