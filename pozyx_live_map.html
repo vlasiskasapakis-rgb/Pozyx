@@ -133,6 +133,7 @@
   <label><input type="checkbox" id="chkTrail" checked> Trails</label>
   <div id="status" class="status">Not connected. Close the Arduino IDE Serial Monitor first, then click Connect (Chrome or Edge).</div>
   <div id="clockInfo" class="status" hidden></div>
+  <div id="dirInfo" class="status" hidden></div>
 </header>
 
 <main>
@@ -906,6 +907,7 @@ async function pollLive() {
   } catch (e) { return; }   // no ar_live table yet
   if (replay.active) return;
   const r = rows.find(x => sessionId && x.session_id === sessionId) || rows[0];   // prefer the selected session
+  livePhone = r ? { hasColumn: 'heading' in r } : null;
   liveLookImage = r && r.target_id ? r.target_name : '';
   liveDir = r && Number.isFinite(r.heading) && r.heading !== null ? { heading: r.heading, pitch: r.pitch || 0 } : null;
   liveLook = r && r.target_id ? `looking at ${r.target_name}${r.mode ? ` (${r.mode === 'ai' ? 'AI assisted' : 'Generic'})` : ''}` : '';
@@ -916,6 +918,29 @@ async function pollLive() {
   showViewing({ title: 'Visitor is viewing', target_id: r.target_id, target_name: r.target_name, mode: r.mode, text: `${r.target_name} · ${secs.toFixed(0)} s${where}` });
 }
 setInterval(pollLive, 1000);
+
+// Says what is needed before the phone's direction can be shown (live), or that it is shown
+let livePhone = null;
+function renderDirInfo() {
+  const el = $('dirInfo');
+  if (!hasDb()) { el.hidden = true; return; }
+  el.hidden = false;
+  let text, warn = true;
+  const first = [...tags.values()][0];
+  if (replay.active) {
+    if (!replay.data.poses) text = 'Phone direction: none saved for this recording.';
+    else if (xAxisHeading === null) text = 'Phone direction: saved, but the compass is not set up (Room view → Compass).';
+    else { text = 'Phone direction: shown as an arrow on the tag and a cone in Room view.'; warn = false; }
+  } else if (!livePhone) text = 'Phone direction: no phone connected. Open the AR viewer on the phone and tap Start camera.';
+  else if (!livePhone.hasColumn) text = 'Phone direction: run the updated supabase/schema.sql in Supabase.';
+  else if (!liveDir) text = 'Phone direction: the phone sends none. In the AR viewer, allow motion sensors (close and reopen it, then Start camera).';
+  else if (xAxisHeading === null) text = `Phone direction: ${Math.round(liveDir.heading)}° from north. Set up the compass once (Room view → Compass) to show it on the map.`;
+  else if (!first || !first.pos) text = `Phone direction: ${Math.round(liveDir.heading)}°, ready. It shows on the tag once there are positions (Connect Arduino or Demo).`;
+  else { text = `Phone direction: ${Math.round(liveDir.heading)}° from north, shown as an arrow on the tag and a cone in Room view.`; warn = false; }
+  el.textContent = text;
+  el.classList.toggle('err', warn);
+}
+setInterval(renderDirInfo, 1000);
 
 function tapText(tp) { return `${tp.label ? tp.label + ' · ' : ''}${clockTime(tp.unix_ms)}`; }
 function renderTapTable() {
