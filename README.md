@@ -17,8 +17,10 @@ other apps.
 ## 1. Arduino sketch
 
 1. Install the Pozyx Arduino library.
-2. Place 3 or 4 anchors around the room, powered on. A1, A2 and A3 must not be in a straight line.
-3. In the sketch, fill in the anchor IDs (in order A1–A4), their heights in mm, and the tag IDs.
+2. Place 3 or more anchors around the room, powered on. A1, A2 and A3 must not be in a straight line.
+3. In the sketch, fill in `num_anchors`, the anchor IDs (in order A1, A2, ...), their heights in mm, and the tag IDs.
+   With anchors at about the same height the sketch uses 2.5D (x, y at a fixed
+   `tag_height`); 3D needs 4+ anchors at clearly different heights.
 4. Upload. Press the red reset button to calibrate again whenever an anchor moves.
 
 Coordinates: (0,0,0) is the floor below anchor A1, x points from A1 to A2,

@@ -5,15 +5,15 @@
   What it does:
     1. Measures the distances between all anchors (they range each other).
     2. Calculates the x,y position of every anchor from those distances
-       and the heights you typed in.
+       and the heights you typed in (any number of anchors from 3 up).
     3. Sends the anchor positions to the tag on the Arduino.
     4. Starts positioning and prints x, y, z of the tag, with a timestamp.
 
   How to use:
-    - Place 3 or 4 anchors around the room, powered on.
+    - Place 3 or more anchors around the room, powered on.
     - After a reset there is a countdown (calibration_delay_s) so you can
       leave the room before the anchors measure each other.
-    - Fill in the anchor IDs and their heights below.
+    - Fill in num_anchors, the anchor IDs and their heights below.
     - Upload, open the Serial Monitor at 115200 baud.
     - Press the red reset button on the Arduino to calibrate again
       (do this whenever you move an anchor).
@@ -36,8 +36,11 @@
   Tips:
     - A1, A2 and A3 must NOT be in a straight line.
     - Anchors should see each other (no walls or big metal objects between them).
-    - With 4 anchors at different heights you get real 3D.
-      With 3 anchors the sketch uses 2.5D (x, y + the fixed tag_height below).
+    - 3D (x, y and the tag's height) needs 4+ anchors at CLEARLY different
+      heights. With anchors at about the same height the sketch uses 2.5D:
+      it works out x, y only and uses the fixed tag_height below
+      (positioning_mode chooses this; automatic by default).
+    - More than 4 anchors: the Pozyx picks the best ones for each position.
 */
 
 #include <Pozyx.h>
@@ -48,16 +51,22 @@
 ////////////////// PARAMETERS //////////////////
 ////////////////////////////////////////////////
 
-const uint8_t num_anchors = 4;     // 4 anchors -> real 3D (x, y, z)
+const uint8_t num_anchors = 5;     // 3 or more
 
-// Anchor IDs in order A1, A2, A3, A4 (the 0x... code on each green board)
-uint16_t anchors[4] = {0x6a67, 0x6a4b, 0x6a71, 0x6a70};
+// Anchor IDs in order A1, A2, A3, ... (the 0x... code on each green board), num_anchors of them
+uint16_t anchors[num_anchors] = {0x6a67, 0x6a4b, 0x6a71, 0x6a70, 0x6a45};
 
-// Height of each anchor above the floor in mm (measure to the antenna).
-// For good 3D, use CLEARLY different heights (e.g. high, low, high, low).
-int32_t heights[4]  = {700, 500, 800, 1000};
+// Height of each anchor above the floor in mm (measure to the antenna), in the same order.
+// For 3D, use CLEARLY different heights (e.g. high, low, high, low).
+int32_t heights[num_anchors]  = {600, 600, 600, 600, 600};
 
-// Not used in 3D mode (z is measured). Only used if you go back to 3 anchors.
+// 0 = automatic: 3D when there are 4+ anchors whose heights differ by at least
+//     min_height_spread mm, otherwise 2.5D.  2 = always 2.5D.  3 = always 3D.
+const uint8_t positioning_mode = 0;
+const int32_t min_height_spread = 500;
+
+// Height of the tag above the floor in mm (how high it is carried). Used in 2.5D,
+// where only x and y are worked out.
 int32_t tag_height = 1000;
 
 // Tags to track: green boards powered by a battery pack (no Arduino needed).
@@ -81,9 +90,9 @@ uint8_t ranging_protocol = POZYX_RANGE_PROTOCOL_PRECISION;
 
 ////////////////////////////////////////////////
 
-int32_t anchors_x[4];
-int32_t anchors_y[4];
-float dist[4][4];       // measured 3D distances between anchors, in mm
+int32_t anchors_x[num_anchors];
+int32_t anchors_y[num_anchors];
+float dist[num_anchors][num_anchors];   // measured 3D distances between anchors, in mm
 uint8_t dimension;
 
 void setup() {
@@ -96,9 +105,8 @@ void setup() {
     abort();
   }
 
-  dimension = (num_anchors >= 4) ? POZYX_3D : POZYX_2_5D;
-
   Serial.println(F("------------POZYX AUTO POSITIONING------------"));
+  dimension = chooseDimension();
   if (calibration_delay_s > 0) {
     Serial.print(F("Leave the room now: measuring the anchors in "));
     Serial.print(calibration_delay_s);
@@ -166,12 +174,14 @@ void setup() {
   if (track_local) {
     Pozyx.clearDevices();
     setAnchors(NULL);
+    if (num_anchors > 4) Pozyx.setSelectionOfAnchors(POZYX_ANCHOR_SEL_AUTO, num_anchors);
     Pozyx.setPositionAlgorithm(algorithm, dimension);
   }
   for (uint8_t t = 0; t < num_tags; t++) {
     Pozyx.setRangingProtocol(ranging_protocol, tags[t]);
     Pozyx.clearDevices(tags[t]);
     setAnchors(tags[t]);
+    if (num_anchors > 4) Pozyx.setSelectionOfAnchors(POZYX_ANCHOR_SEL_AUTO, num_anchors, tags[t]);
     if (Pozyx.setPositionAlgorithm(algorithm, dimension, tags[t]) == POZYX_SUCCESS) {
       Serial.print(F("  tag 0x"));
       Serial.print(tags[t], HEX);
@@ -183,7 +193,9 @@ void setup() {
     }
   }
 
-  Serial.println(F("Step 4: positioning started (x, y, z in mm, time in ms since start)"));
+  Serial.print(F("Step 4: positioning started in "));
+  Serial.print(dimension == POZYX_3D ? F("3D") : F("2.5D (z = tag_height)"));
+  Serial.println(F(" (x, y, z in mm, time in ms since start)"));
   Serial.println();
   delay(500);
 }
@@ -290,6 +302,25 @@ float measurePair(uint16_t a, uint16_t b) {
   return sum / count;
 }
 
+// 3D needs 4+ anchors at clearly different heights; otherwise 2.5D (x, y at tag_height)
+uint8_t chooseDimension() {
+  if (positioning_mode == 2) return POZYX_2_5D;
+  if (positioning_mode == 3) return POZYX_3D;
+  int32_t lo = heights[0], hi = heights[0];
+  for (uint8_t i = 1; i < num_anchors; i++) {
+    if (heights[i] < lo) lo = heights[i];
+    if (heights[i] > hi) hi = heights[i];
+  }
+  if (num_anchors >= 4 && hi - lo >= min_height_spread) {
+    Serial.println(F("Mode: 3D (anchor heights differ enough)"));
+    return POZYX_3D;
+  }
+  Serial.print(F("Mode: 2.5D, tag height fixed at "));
+  Serial.print(tag_height);
+  Serial.println(F(" mm (anchor heights too similar for 3D)"));
+  return POZYX_2_5D;
+}
+
 // Squared horizontal distance between anchors i and j (removes the height difference).
 float horiz2(uint8_t i, uint8_t j) {
   float dz = (float)(heights[i] - heights[j]);
@@ -316,19 +347,22 @@ bool computeAnchorPositions() {
   anchors_x[2] = lround(x3);
   anchors_y[2] = lround(y3);
 
-  // A4: same as A3, then pick the side (+y or -y) that matches the A3-A4 distance
-  if (num_anchors >= 4) {
-    float x4 = (horiz2(0, 3) - horiz2(1, 3) + d12 * d12) / (2 * d12);
-    float y4sq = horiz2(0, 3) - x4 * x4;
-    float y4 = (y4sq > 0) ? sqrt(y4sq) : 0;
+  // A4 and beyond: x from A1 and A2 as for A3, then pick the side (+y or -y)
+  // that best matches the distances to all anchors placed so far (except A1, A2)
+  for (uint8_t i = 3; i < num_anchors; i++) {
+    float xi = (horiz2(0, i) - horiz2(1, i) + d12 * d12) / (2 * d12);
+    float yisq = horiz2(0, i) - xi * xi;
+    float yi = (yisq > 0) ? sqrt(yisq) : 0;
 
-    float target = sqrt(horiz2(2, 3));
-    float dx = x4 - x3;
-    float e_pos = fabs(sqrt(dx * dx + (y4 - y3) * (y4 - y3)) - target);
-    float e_neg = fabs(sqrt(dx * dx + (-y4 - y3) * (-y4 - y3)) - target);
-
-    anchors_x[3] = lround(x4);
-    anchors_y[3] = lround((e_pos <= e_neg) ? y4 : -y4);
+    float e_pos = 0, e_neg = 0;
+    for (uint8_t j = 2; j < i; j++) {
+      float dx = xi - anchors_x[j];
+      float target = sqrt(horiz2(j, i));
+      e_pos += sq(sqrt(dx * dx + sq(yi - anchors_y[j])) - target);
+      e_neg += sq(sqrt(dx * dx + sq(-yi - anchors_y[j])) - target);
+    }
+    anchors_x[i] = lround(xi);
+    anchors_y[i] = lround((e_pos <= e_neg) ? yi : -yi);
   }
   return true;
 }
