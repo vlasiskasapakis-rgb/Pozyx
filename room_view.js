@@ -79,6 +79,11 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   const tapMat = new THREE.MeshStandardMaterial({ color: 0xb4531a });
   const figures = new Map();   // tag id -> {group, trail, last}
 
+  // Each tag is shown as the phone it is fixed to (at the measured position, turned like the
+  // phone), as a person (a 1.7 m figure standing behind it), or both: see setShowAs()
+  let showAs = 'phone';
+  const PHONE_SCALE = 1.5;   // a little larger than a real phone, so it is easy to see
+  const PERSON_BEHIND = 0.35;   // meters between the phone and the person's centre
   function makeFigure(color) {
     const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6 });
     const g = new THREE.Group();
@@ -92,14 +97,29 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.3, 24), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.18 }));
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.01;
+    shadow.userData.shadow = true;
     g.add(body, head, nose, shadow);
+    // the phone: screen towards +z, back camera looking along -z, top along +y
+    const phone = new THREE.Group();
+    const caseMesh = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.155, 0.009), mat);
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.067, 0.142), new THREE.MeshBasicMaterial({ color: 0x1a1a1a }));
+    screen.position.z = 0.0046;
+    const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.004, 16), new THREE.MeshBasicMaterial({ color: 0x111111 }));
+    lens.rotation.x = Math.PI / 2;
+    lens.position.set(-0.022, 0.06, -0.006);
+    phone.add(caseMesh, screen, lens);
+    phone.scale.setScalar(PHONE_SCALE);
+    phone.rotation.order = 'YXZ';
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.14, 0.18, 32), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
+    ring.rotation.x = -Math.PI / 2;   // on the floor below the phone, to find it from above
+    const stem = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color, dashSize: 0.06, gapSize: 0.05 }));
     const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.7 }));
-    // where the phone's camera points: a see-through cone from the head
+    // where the phone's camera points: a see-through cone from the phone (or the head)
     const cone = new THREE.Mesh(new THREE.ConeGeometry(0.45, 2, 24, 1, true),
       new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false }));
     cone.visible = false;
-    scene.add(g, trail, cone);
-    return { group: g, trail, cone, heading: 0, last: null };
+    scene.add(g, phone, ring, stem, trail, cone);
+    return { group: g, phone, ring, stem, trail, cone, heading: 0, last: null };
   }
 
   let dynSig = null;
@@ -130,7 +150,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     const sig = [...state.anchors.values()].map(a => `${a.x},${a.y},${a.z}`).join(';') + '|' +
       (state.tapMarks || []).map(m => `${m.x},${m.y}`).join(';');
     if (sig !== dynSig) rebuildMarkers(state, sig);
-    // figures stand on the floor at the tag's x, y (the measured height is not used)
+    const showPhone = showAs !== 'person', showPerson = showAs !== 'phone';
     const seen = new Set();
     let labelText = '', labelPos = null;
     for (const [id, t] of state.tags) {
@@ -138,27 +158,42 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       seen.add(id);
       let f = figures.get(id);
       if (!f) { f = makeFigure(t.color); figures.set(id, f); }
-      const p = P(t.pos.x, t.pos.y, 0);
+      const floor = P(t.pos.x, t.pos.y, 0);
+      const phonePos = P(t.pos.x, t.pos.y, Number.isFinite(t.pos.z) && t.pos.z > 0 ? t.pos.z : 1200);   // the tag is on the phone
       const dir = !labelPos && state.dir ? state.dir : null;   // the phone carries the first tag
       if (dir) f.heading = Math.atan2(Math.cos(dir.angle), -Math.sin(dir.angle));   // faces where the phone points
-      else if (f.last && f.last.distanceTo(p) > 0.03) f.heading = Math.atan2(p.x - f.last.x, p.z - f.last.z);   // or where it walks
-      f.last = p.clone();
-      f.group.position.copy(p);
+      else if (f.last && f.last.distanceTo(floor) > 0.03) f.heading = Math.atan2(floor.x - f.last.x, floor.z - f.last.z);   // or where it walks
+      f.last = floor.clone();
+      const forward = new THREE.Vector3(Math.sin(f.heading), 0, Math.cos(f.heading));
+      // the phone, turned like the real one (direction, tilt, roll)
+      f.phone.visible = f.ring.visible = f.stem.visible = showPhone;
+      f.phone.position.copy(phonePos);
+      f.phone.rotation.set(dir ? dir.pitch : 0, f.heading + Math.PI, dir ? dir.roll || 0 : 0);   // + PI: the camera looks along -z
+      f.ring.position.copy(floor).setY(0.012);
+      f.stem.geometry.dispose();
+      f.stem.geometry = new THREE.BufferGeometry().setFromPoints([phonePos, floor]);
+      f.stem.computeLineDistances();
+      // the person stands behind the phone
+      f.group.visible = showPerson;
+      f.group.position.copy(floor).addScaledVector(forward, showPhone ? -PERSON_BEHIND : 0);
       f.group.rotation.y = f.heading;
+      for (const m of f.group.children) if (m.material && !m.userData.shadow) { m.material.transparent = showPhone; m.material.opacity = showPhone ? 0.35 : 1; }   // faint behind the phone
       f.cone.visible = !!dir;
       if (dir) {
         const d = new THREE.Vector3(Math.cos(dir.pitch) * Math.cos(dir.angle), Math.sin(dir.pitch), -Math.cos(dir.pitch) * Math.sin(dir.angle));
-        const eye = p.clone().setY(FIGURE_HEIGHT - 0.15);
-        f.cone.position.copy(eye).addScaledVector(d, 1);   // the cone is 2 m long, its tip at the eye
+        const from = showPhone ? phonePos : floor.clone().setY(FIGURE_HEIGHT - 0.15);
+        f.cone.position.copy(from).addScaledVector(d, 1);   // the cone is 2 m long, its tip at the camera
         f.cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.clone().negate());
       }
-      f.group.visible = true;
       const pts = state.showTrail ? t.trail.map(q => P(q.x, q.y, 0).setY(0.03)) : [];
       f.trail.geometry.dispose();
       f.trail.geometry = new THREE.BufferGeometry().setFromPoints(pts);
-      if (!labelPos) { labelPos = p.clone().setY(FIGURE_HEIGHT + 0.25); labelText = id + (state.look ? ' · ' + state.look : ''); }
+      if (!labelPos) {
+        labelPos = showPhone ? phonePos.clone().add(new THREE.Vector3(0, 0.3, 0)) : floor.clone().setY(FIGURE_HEIGHT + 0.25);
+        labelText = id + (state.look ? ' · ' + state.look : '');
+      }
     }
-    for (const [id, f] of figures) if (!seen.has(id)) { f.group.visible = false; f.cone.visible = false; f.trail.geometry = new THREE.BufferGeometry(); }
+    for (const [id, f] of figures) if (!seen.has(id)) { f.group.visible = f.phone.visible = f.ring.visible = f.stem.visible = f.cone.visible = false; f.trail.geometry = new THREE.BufferGeometry(); }
     // label above the first figure's head
     if (labelPos) {
       const v = labelPos.project(camera);
@@ -501,6 +536,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     get hasModel() { return !!model; },
     get model() { return model; },
     get stats() { return stats; },
+    setShowAs(v) { if (['phone', 'person', 'both'].includes(v)) { showAs = v; needsRender = true; lastStateKey = ''; } },
     setQuality,
   };
 }

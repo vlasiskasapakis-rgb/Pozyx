@@ -178,6 +178,12 @@
             <option value="balanced">Balanced</option>
             <option value="light">Light</option>
           </select></label>
+        <label title="The tag is on the phone: show the phone where it was measured, the person holding it, or both" style="display:flex; align-items:center; gap:6px; font-size:13px">Show
+          <select id="roomShowAs" style="font:inherit; font-size:13px; padding:5px 6px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text)">
+            <option value="phone">Phone</option>
+            <option value="person">Person</option>
+            <option value="both">Both</option>
+          </select></label>
       </div>
       <input type="file" id="fileRoom" accept=".glb,.gltf" hidden>
       <input type="file" id="fileRoomFbx" webkitdirectory multiple hidden>
@@ -205,7 +211,7 @@
         <label title="Turn this on when the model lies on its side (Z-up files from 3ds Max, Revit, SketchUp)">Upright
           <span style="display:flex; align-items:center; gap:6px; color:var(--text)"><input type="checkbox" id="alUpright" style="width:auto"> Z-up</span></label>
       </div>
-      <p class="hint">Drag to orbit, right-drag to pan, scroll to zoom. The figure stands on the floor at the tag's position.</p>
+      <p class="hint">Drag to orbit, right-drag to pan, scroll to zoom. The phone is drawn where the tag was measured (at its height), turned like the real phone; the person stands about 35 cm behind it.</p>
     </div>
     <div class="card" id="viewCard" hidden>
       <h2 id="viewTitle">Visitor is viewing</h2>
@@ -864,7 +870,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-02h';
+const CODE_VERSION = '2026-11-02j';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1484,7 +1490,7 @@ function poseAt(list, t) {
   if (t >= b.t) return Math.abs(t - b.t) < 2 ? b : null;
   if (b.t - a.t > 2) return null;
   const k = (t - a.t) / (b.t - a.t), dh = ((b.heading - a.heading + 540) % 360) - 180;
-  return { heading: (a.heading + dh * k + 360) % 360, pitch: a.pitch + (b.pitch - a.pitch) * k };
+  return { heading: (a.heading + dh * k + 360) % 360, pitch: a.pitch + (b.pitch - a.pitch) * k, roll: (a.roll || 0) + ((b.roll || 0) - (a.roll || 0)) * k };
 }
 // Room direction (radians, counter-clockwise from the x axis) of a compass bearing; null without the compass setup
 function roomAngle(heading) {
@@ -1506,7 +1512,7 @@ function roomState() {
     if (lk) { look = `looking at ${lk.name}${lk.mode ? ` (${lk.mode})` : ''}`; lookImage = lk.name; }
   } else if (!replay.active) { look = liveLook; lookImage = liveLookImage; }
   const d = phoneDirNow(), ang = d ? roomAngle(d.heading) : null;
-  const dir = ang === null ? null : { angle: ang, pitch: (d.pitch || 0) * Math.PI / 180 };
+  const dir = ang === null ? null : { angle: ang, pitch: (d.pitch || 0) * Math.PI / 180, roll: (d.roll || 0) * Math.PI / 180 };
   return { anchors, tags, showTrail: $('chkTrail').checked, tapMarks: tapMarksToDraw(), look, lookImage, dir };
 }
 async function openRoom() {
@@ -1514,6 +1520,7 @@ async function openRoom() {
     try {
       const { createRoomView } = await import('./room_view.js?v=' + CODE_VERSION);
       room = createRoomView($('room'), roomState, roomQuality());
+      room.setShowAs($('roomShowAs').value);
     } catch (e) { roomInfo(`Could not start the room view: ${e.message}`, true); return; }
   }
   room.show();
@@ -1878,6 +1885,11 @@ $('xAxisHeading').addEventListener('change', () => {
   setXAxisHeading(Number.isFinite(v) ? v : NaN, true);
 });
 $('roomQuality').value = roomQuality();
+try { const v = localStorage.getItem('pozyx.roomShowAs'); if (['phone', 'person', 'both'].includes(v)) $('roomShowAs').value = v; } catch (e) {}
+$('roomShowAs').onchange = () => {
+  try { localStorage.setItem('pozyx.roomShowAs', $('roomShowAs').value); } catch (e) {}
+  if (room) room.setShowAs($('roomShowAs').value);
+};
 $('roomQuality').onchange = () => {
   try { localStorage.setItem('pozyx.roomQuality', $('roomQuality').value); } catch (e) {}
   if (room) room.setQuality($('roomQuality').value);

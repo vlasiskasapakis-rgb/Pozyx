@@ -195,8 +195,11 @@ The AR viewer reads the phone's own orientation sensors (compass-based) about
 5 times a second while the camera runs and saves where the back camera points
 (table `phone_pose`: heading 0-360° from north, pitch up/down, roll) on the
 server clock, under the session. The live map shows it live (via `ar_live`)
-and in replays: the figure in the Room view turns to face it with a view cone,
-and the top and 3D views draw an arrow on the first tag (the phone's tag).
+and in replays: in the Room view the phone is drawn where the tag was measured
+(at its height), turned like the real phone (direction, tilt, roll), with a
+view cone from its camera; **Show** switches to the person holding it (a 1.7 m
+figure about 35 cm behind the phone) or both. The top and 3D views draw an
+arrow on the first tag (the phone's tag).
 
 Set up once: in Room view → **Compass**, hold the phone (AR viewer running) at
 A1 with its back camera pointing at A2 and click **Phone points along A1 → A2
