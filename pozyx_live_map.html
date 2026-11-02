@@ -171,6 +171,12 @@
         <button id="btnRoomUpload">Upload GLB…</button>
         <button id="btnRoomFbx" title="Pick the folder that holds the FBX and its texture files">Upload FBX folder…</button>
         <button id="btnRoomReset">Reset view</button>
+        <label title="Lower detail runs smoother on laptops. Saved on this computer only." style="display:flex; align-items:center; gap:6px; font-size:13px">Detail
+          <select id="roomQuality" style="font:inherit; font-size:13px; padding:5px 6px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text)">
+            <option value="high">High</option>
+            <option value="balanced">Balanced</option>
+            <option value="light">Light</option>
+          </select></label>
       </div>
       <input type="file" id="fileRoom" accept=".glb,.gltf" hidden>
       <input type="file" id="fileRoomFbx" webkitdirectory multiple hidden>
@@ -849,7 +855,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-02f';
+const CODE_VERSION = '2026-11-02g';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1380,6 +1386,11 @@ function setView(mode) {
 let room = null, roomCfg = null, roomLoaded = false, liveLook = '', liveLookImage = '';
 const ALIGN = { alOx: 'offset_x', alOy: 'offset_y', alOz: 'offset_z', alRot: 'rotation_deg', alScale: 'scale' };
 const alignOf = (c) => ({ ox: c.offset_x, oy: c.offset_y, oz: c.offset_z, rot: c.rotation_deg, scale: c.scale });
+// Detail level of the room view, remembered per computer (a laptop can use less than a PC)
+function roomQuality() {
+  try { const q = localStorage.getItem('pozyx.roomQuality'); if (['high', 'balanced', 'light'].includes(q)) return q; } catch (e) {}
+  return 'balanced';
+}
 function roomInfo(text, isErr) { $('roomInfo').textContent = text; $('roomInfo').classList.toggle('err', !!isErr); }
 
 // What the room view draws: the same anchors and tags as the other views
@@ -1395,7 +1406,7 @@ async function openRoom() {
   if (!room) {
     try {
       const { createRoomView } = await import('./room_view.js?v=' + CODE_VERSION);
-      room = createRoomView($('room'), roomState);
+      room = createRoomView($('room'), roomState, roomQuality());
     } catch (e) { roomInfo(`Could not start the room view: ${e.message}`, true); return; }
   }
   room.show();
@@ -1423,7 +1434,9 @@ async function loadRoomConfig() {
       isFbx ? { type: 'fbx', files, parts, zUp: roomCfg.z_up, onTextures: showGlowMatches } : { parts });
     if (isFbx && roomCfg.z_up == null) { roomCfg.z_up = res.zUp; saveRoomCfg(); }   // remember what was detected
     $('alUpright').checked = !!roomCfg.z_up;
-    roomInfo(`Model: ${roomCfg.model_name}${isFbx ? ` with ${Object.keys(files).length} texture files` : ''}`);
+    const st = room.stats;
+    roomInfo(`Model: ${roomCfg.model_name}${isFbx ? ` with ${Object.keys(files).length} texture files` : ''}` +
+      (st ? ` · ${st.parts.toLocaleString()} parts drawn as ${st.drawn.toLocaleString()}` : ''));
     showGlowMatches();
   } catch (e) {
     roomInfo(`Could not load the model: ${e.message}`, true);
@@ -1747,6 +1760,11 @@ $('btnRoomUpload').onclick = () => $('fileRoom').click();
 $('fileRoom').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) uploadRoom(f); };
 $('btnRoomReset').onclick = () => room && room.resetView();
 $('btnRoomFbx').onclick = () => $('fileRoomFbx').click();
+$('roomQuality').value = roomQuality();
+$('roomQuality').onchange = () => {
+  try { localStorage.setItem('pozyx.roomQuality', $('roomQuality').value); } catch (e) {}
+  if (room) room.setQuality($('roomQuality').value);
+};
 $('fileRoomFbx').onchange = (e) => { const f = e.target.files; if (f.length) uploadRoomFbx(f); e.target.value = ''; };
 $('alUpright').addEventListener('change', () => {
   if (!roomCfg || !room) return;

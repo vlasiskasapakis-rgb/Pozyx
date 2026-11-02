@@ -11,11 +11,18 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { TGALoader } from 'three/addons/loaders/TGALoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const P = (x, y, z) => new THREE.Vector3(x / 1000, z / 1000, -y / 1000);   // Pozyx mm -> room meters
 const FIGURE_HEIGHT = 1.7;
 const GLOW = new THREE.Color(0x33ff66);   // looked-at images glow this colour
 const GLOW_FADE_S = 0.25;
+// Detail levels: drawing sharpness (pixel ratio) and the largest texture size
+const QUALITY = {
+  high: { pixelRatio: () => Math.min(window.devicePixelRatio || 1, 2), maxTexture: Infinity },
+  balanced: { pixelRatio: () => Math.min(window.devicePixelRatio || 1, 1), maxTexture: 2048 },
+  light: { pixelRatio: () => 0.75, maxTexture: 1024 },
+};
 
 // Names compared in capitals with every run of other characters as "_":
 // "Miro A2.jpg" -> "MIRO_A2_JPG", "textures/miro-a2.png" -> "TEXTURES_MIRO_A2_PNG"
@@ -28,9 +35,10 @@ export const imageKey = (name) => norm(String(name || '').replace(/\.(jpe?g|png|
 const namesMatch = (n, k) => !!k && (n === k || n.startsWith(k + '_') || n.endsWith('_' + k) || n.includes('_' + k + '_'));
 
 // getState() returns { anchors: Map id->{x,y,z}, tags: Map id->{pos,trail,color}, showTrail, tapMarks: [{x,y,z,label}], look: text }
-export function createRoomView(container, getState) {
+export function createRoomView(container, getState, initialQuality = 'balanced') {
+  let quality = QUALITY[initialQuality] ? initialQuality : 'balanced';
   const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(QUALITY[quality].pixelRatio());
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   container.appendChild(renderer.domElement);
   const label = document.createElement('div');
@@ -50,6 +58,9 @@ export function createRoomView(container, getState) {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.target.set(2, 0, -2);
+  // Draw only when something changed (view turned, visitor moved, a glow fading), not 60 times a second
+  let needsRender = true, lastStateKey = '';
+  controls.addEventListener('change', () => { needsRender = true; });
 
   // the room model, inside a group that carries the alignment
   const modelGroup = new THREE.Group();
@@ -153,6 +164,7 @@ export function createRoomView(container, getState) {
     renderer.domElement.style.height = '100%';
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    needsRender = true;
   }
   new ResizeObserver(resize).observe(container);
 
@@ -163,9 +175,15 @@ export function createRoomView(container, getState) {
     lastFrame = now;
     controls.update();
     const state = getState();
-    updateDynamic(state);
-    if (model) updateGlow(state.lookImage, dt);
-    renderer.render(scene, camera);
+    let key = `${state.look}|${state.showTrail}|${dynSig}`;
+    for (const [id, t] of state.tags) if (t.pos) key += `|${id}:${t.pos.x},${t.pos.y},${t.trail.length}`;
+    if (key !== lastStateKey) { lastStateKey = key; needsRender = true; }
+    if (needsRender) updateDynamic(state);
+    if (model && updateGlow(state.lookImage, dt)) needsRender = true;
+    if (needsRender) {
+      renderer.render(scene, camera);
+      needsRender = false;
+    }
     requestAnimationFrame(frame);
   }
 
@@ -177,6 +195,7 @@ export function createRoomView(container, getState) {
     if (box.isEmpty()) box.set(new THREE.Vector3(0, 0, -5), new THREE.Vector3(5, 2.5, 0));
     const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3()).length();
     controls.target.copy(c);
+    needsRender = true;
     camera.position.copy(c).add(new THREE.Vector3(size * 0.45, size * 0.55, size * 0.6));
     camera.near = Math.max(0.02, size / 500);
     camera.far = size * 20;
@@ -191,6 +210,7 @@ export function createRoomView(container, getState) {
 
   // align = {ox, oy, oz, rot (degrees around the vertical), scale}
   function setAlign(a) {
+    needsRender = true;
     modelGroup.position.set(+a.ox || 0, +a.oy || 0, +a.oz || 0);
     modelGroup.rotation.set(0, (+a.rot || 0) * Math.PI / 180, 0);
     modelGroup.scale.setScalar(+a.scale || 1);
@@ -199,7 +219,7 @@ export function createRoomView(container, getState) {
   // The model sits in "upright" (turns a Z-up model to Y-up) inside modelGroup (the alignment)
   const upright = new THREE.Group();
   modelGroup.add(upright);
-  function setUpright(zUp) { upright.rotation.set(zUp ? -Math.PI / 2 : 0, 0, 0); }
+  function setUpright(zUp) { upright.rotation.set(zUp ? -Math.PI / 2 : 0, 0, 0); needsRender = true; }
 
   // GLB: one file. FBX: opts.files maps texture file names (lower case) to their addresses, because
   // an FBX refers to its textures by the path they had on the computer that made it.
@@ -255,18 +275,99 @@ export function createRoomView(container, getState) {
       }
       result.zUp = zUp;
       setUpright(zUp);
-      texturesDone.then(() => { if (model === root) { indexGlow(); if (opts.onTextures) opts.onTextures(); } });
+      texturesDone.then(() => {
+        if (model !== root) return;
+        indexGlow();
+        limitTextures();
+        needsRender = true;
+        if (opts.onTextures) opts.onTextures();
+      });
     } else {
       root = (packed ? await loader.parseAsync(await fetchModelData(url, opts.parts, progress), '') : await loader.loadAsync(url, progress)).scene;
       setUpright(false);
     }
+    const merged = mergeByMaterial(root);   // fewer, bigger parts draw much faster
+    stats = { parts: merged.before, drawn: merged.group.children.length };
+    root = merged.group;
     if (model) upright.remove(model);
     model = root;
     upright.add(model);
     floorGrid.visible = false;
     indexGlow();
+    limitTextures();
     resetView();
     return result;
+  }
+
+  // Objects that share a material are joined into one (in the model's own position), so the
+  // browser handles tens of parts instead of thousands. The objects' names are kept on the
+  // material, for the glow. Animated, mirrored and multi-material objects stay as they are.
+  let stats = null;
+  function mergeByMaterial(root) {
+    root.updateMatrixWorld(true);
+    const groups = new Map(), keep = [];
+    let before = 0;
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      before++;
+      const m = o.material;
+      for (const mm of [].concat(m)) if (mm && o.name) (mm.userData.objectNames ||= new Set()).add(o.name);
+      if (o.isSkinnedMesh || o.isInstancedMesh || Array.isArray(m) || o.morphTargetInfluences || o.matrixWorld.determinant() < 0) { keep.push(o); return; }
+      const g = o.geometry;
+      const key = m.uuid + '|' + Object.keys(g.attributes).sort().join(',') + (g.index ? '|i' : '|n');
+      if (!groups.has(key)) groups.set(key, { material: m, geos: [] });
+      groups.get(key).geos.push(g.clone().applyMatrix4(o.matrixWorld));
+    });
+    const out = new THREE.Group();
+    for (const { material, geos } of groups.values()) {
+      const one = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+      if (one) { out.add(new THREE.Mesh(one, material)); if (geos.length > 1) geos.forEach(g => g.dispose()); }
+      else geos.forEach(g => out.add(new THREE.Mesh(g, material)));   // could not be joined
+    }
+    for (const o of keep) out.attach(o);
+    root.traverse((o) => { if (o.isMesh && !keep.includes(o)) o.geometry.dispose(); });
+    return { group: out, before };
+  }
+
+  // Textures bigger than the detail level allows are drawn smaller (the original is kept, to go back)
+  function limitTextures() {
+    if (!model) return;
+    const max = QUALITY[quality].maxTexture;
+    const done = new Set();
+    model.traverse((o) => {
+      if (!o.isMesh) return;
+      for (const m of [].concat(o.material)) for (const k of MAPS) {
+        const t = m && m[k];
+        if (!t || done.has(t)) continue;
+        done.add(t);
+        const img = t.userData.original || t.image;
+        if (!img || !img.width) continue;
+        if (!t.userData.file) {   // remember the file name: the smaller copy has none
+          const src = img.currentSrc || img.src;
+          if (src && !/^(blob|data):/.test(src)) t.userData.file = decodeURIComponent(src.split('?')[0].split('/').pop());
+        }
+        const big = Math.max(img.width, img.height);
+        if (big <= max) {
+          if (t.userData.original) { t.image = t.userData.original; delete t.userData.original; t.needsUpdate = true; }
+          continue;
+        }
+        const k2 = max / big, c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.width * k2));
+        c.height = Math.max(1, Math.round(img.height * k2));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        t.userData.original = img;
+        t.image = c;
+        t.needsUpdate = true;
+      }
+    });
+    needsRender = true;
+  }
+  function setQuality(q) {
+    if (!QUALITY[q]) return;
+    quality = q;
+    renderer.setPixelRatio(QUALITY[q].pixelRatio());
+    resize();
+    limitTextures();
   }
 
   // Parts of the model that light up when the visitor looks at an image: materials whose
@@ -288,10 +389,11 @@ export function createRoomView(container, getState) {
           seen.set(m, e);
           glowEntries.push(e);
           if (m.name) e.names.add(norm(m.name));
+          for (const n of m.userData.objectNames || []) e.names.add(norm(n));
           for (const k of MAPS) {
             if (!m[k]) continue;
             const src = m[k].image && (m[k].image.currentSrc || m[k].image.src);
-            const file = src && !/^(blob|data):/.test(src) ? decodeURIComponent(src.split('?')[0].split('/').pop()) : '';
+            const file = m[k].userData.file || (src && !/^(blob|data):/.test(src) ? decodeURIComponent(src.split('?')[0].split('/').pop()) : '');
             for (const n of [m[k].name, file]) if (n) { e.names.add(norm(n)); e.textures.add(n); }
           }
         }
@@ -307,13 +409,16 @@ export function createRoomView(container, getState) {
   function updateGlow(lookImage, dt) {
     const on = new Set(lookImage ? entriesFor(lookImage) : []);
     const step = Math.min(1, dt / GLOW_FADE_S);
+    let changed = false;
     for (const e of glowEntries) {
       const goal = on.has(e) ? 1 : 0;
       if (e.w === goal) continue;
+      changed = true;
       e.w = goal > e.w ? Math.min(1, e.w + step) : Math.max(0, e.w - step);
       if (e.color) e.mat.color.copy(e.color).lerp(GLOW, e.w * 0.55);
       if (e.emissive) e.mat.emissive.copy(e.emissive).add(GLOW.clone().multiplyScalar(e.w * 0.45));
     }
+    return changed;
   }
   // which of these image names have something to light up in the model
   function glowMatches(names) {
@@ -329,7 +434,7 @@ export function createRoomView(container, getState) {
       for (const k of MAPS) {
         const t = e.mat[k];
         const src = t && t.image && (t.image.currentSrc || t.image.src);
-        if (t && !t.name && !(src && !/^(blob|data):/.test(src))) unnamedTextures++;
+        if (t && !t.name && !t.userData.file && !(src && !/^(blob|data):/.test(src))) unnamedTextures++;
       }
     }
     return { textures: [...textures].sort(), materials: [...materials].sort(), unnamedTextures };
@@ -338,6 +443,7 @@ export function createRoomView(container, getState) {
     if (model) upright.remove(model);
     model = null;
     floorGrid.visible = true;
+    needsRender = true;
   }
 
   // Two-point alignment: the caller asks for a click on the model; the point comes back in the
@@ -376,10 +482,12 @@ export function createRoomView(container, getState) {
   }
 
   return {
-    show() { if (!running) { running = true; resize(); requestAnimationFrame(frame); } },
+    show() { if (!running) { running = true; needsRender = true; resize(); requestAnimationFrame(frame); } },
     hide() { running = false; label.hidden = true; },
     loadModel, removeModel, setAlign, setUpright, resetView, pick, alignFromPoints, glowMatches, modelNames,
     get hasModel() { return !!model; },
     get model() { return model; },
+    get stats() { return stats; },
+    setQuality,
   };
 }

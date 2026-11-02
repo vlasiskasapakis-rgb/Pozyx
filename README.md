@@ -177,6 +177,10 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    anchor A1 in the model, then below A2. Fine-tune with Move x / up / z, Turn
    and Scale (1 = the model is in meters). The page reports the A1–A2 distance
    in the model and as measured, to check the result.
+   **Detail** (High / Balanced / Light, saved per computer): Balanced and
+   Light draw at normal sharpness and shrink textures to 2048 / 1024 px for
+   laptops. The view only redraws when something changes, and objects that
+   share a material are joined (the panel shows "N parts drawn as M").
 3. Looked-at images light up: while the visitor looks at an AR image (live or
    in a replay), the parts of the model whose texture, material or object name
    contains the image's name as a whole part glow green ("MIRO_A2" matches
