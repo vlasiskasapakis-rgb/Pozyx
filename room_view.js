@@ -12,6 +12,15 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 const P = (x, y, z) => new THREE.Vector3(x / 1000, z / 1000, -y / 1000);   // Pozyx mm -> room meters
 const FIGURE_HEIGHT = 1.7;
+const GLOW = new THREE.Color(0x33ff66);   // looked-at images glow this colour
+const GLOW_FADE_S = 0.25;
+
+// "Miro D5.jpg", "MIRO_D5_MAT", "textures/miro-d5.png" -> "MIRO_D5"
+export function imageKey(name) {
+  let k = String(name || '').split(/[\\/]/).pop().replace(/\.(jpe?g|png|webp|gif|bmp|ktx2|basis)$/i, '');
+  k = k.replace(/\s*\(instance\)$/i, '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  return k.replace(/_MAT$/, '');
+}
 
 // getState() returns { anchors: Map id->{x,y,z}, tags: Map id->{pos,trail,color}, showTrail, tapMarks: [{x,y,z,label}], look: text }
 export function createRoomView(container, getState) {
@@ -142,11 +151,15 @@ export function createRoomView(container, getState) {
   }
   new ResizeObserver(resize).observe(container);
 
-  let running = false;
+  let running = false, lastFrame = performance.now();
   function frame() {
     if (!running) return;
+    const now = performance.now(), dt = (now - lastFrame) / 1000;
+    lastFrame = now;
     controls.update();
-    updateDynamic(getState());
+    const state = getState();
+    updateDynamic(state);
+    if (model) updateGlow(state.lookImage, dt);
     renderer.render(scene, camera);
     requestAnimationFrame(frame);
   }
@@ -184,7 +197,50 @@ export function createRoomView(container, getState) {
     model = gltf.scene;
     modelGroup.add(model);
     floorGrid.visible = false;
+    indexGlow();
     resetView();
+  }
+
+  // Parts of the model that light up when the visitor looks at an image: materials whose
+  // texture, material name or object name is the image's name
+  const glow = new Map();   // image key -> [{mat, color, emissive, w}]
+  let glowEntries = [];     // every material that can glow, once
+  function indexGlow() {
+    glow.clear();
+    glowEntries = [];
+    const seen = new Map();   // material -> its entry, so a shared material is handled once
+    model.traverse((o) => {
+      if (!o.isMesh) return;
+      for (const m of [].concat(o.material)) {
+        if (!m) continue;
+        const keys = new Set([m.map && m.map.name, m.name, o.name].filter(Boolean).map(imageKey).filter(Boolean));
+        let entry = seen.get(m);
+        if (!entry) {
+          entry = { mat: m, color: m.color ? m.color.clone() : null, emissive: m.emissive ? m.emissive.clone() : null, w: 0 };
+          seen.set(m, entry);
+        }
+        if (keys.size && !entry.listed) { entry.listed = true; glowEntries.push(entry); }
+        for (const k of keys) {
+          if (!glow.has(k)) glow.set(k, []);
+          if (!glow.get(k).includes(entry)) glow.get(k).push(entry);
+        }
+      }
+    });
+  }
+  function updateGlow(lookImage, dt) {
+    const on = new Set(lookImage ? glow.get(imageKey(lookImage)) || [] : []);
+    const step = Math.min(1, dt / GLOW_FADE_S);
+    for (const e of glowEntries) {
+      const goal = on.has(e) ? 1 : 0;
+      if (e.w === goal) continue;
+      e.w = goal > e.w ? Math.min(1, e.w + step) : Math.max(0, e.w - step);
+      if (e.color) e.mat.color.copy(e.color).lerp(GLOW, e.w * 0.55);
+      if (e.emissive) e.mat.emissive.copy(e.emissive).add(GLOW.clone().multiplyScalar(e.w * 0.45));
+    }
+  }
+  // which of these image names have something to light up in the model
+  function glowMatches(names) {
+    return names.map(n => ({ name: n, found: glow.has(imageKey(n)) }));
   }
   function removeModel() {
     if (model) modelGroup.remove(model);
@@ -230,7 +286,8 @@ export function createRoomView(container, getState) {
   return {
     show() { if (!running) { running = true; resize(); requestAnimationFrame(frame); } },
     hide() { running = false; label.hidden = true; },
-    loadModel, removeModel, setAlign, resetView, pick, alignFromPoints,
+    loadModel, removeModel, setAlign, resetView, pick, alignFromPoints, glowMatches,
     get hasModel() { return !!model; },
+    get model() { return model; },
   };
 }

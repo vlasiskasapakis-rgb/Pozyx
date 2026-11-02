@@ -172,6 +172,7 @@
         <button id="btnRoomReset">Reset view</button>
       </div>
       <input type="file" id="fileRoom" accept=".glb,.gltf" hidden>
+      <div id="roomGlow" class="hint"></div>
       <h2 style="margin-top:14px">Line up with the Pozyx positions</h2>
       <button id="btnAlign" class="primary">Align with A1 and A2…</button>
       <p class="hint" id="alignHint">Click the floor below anchor A1 in the model, then the floor below A2. Or set the numbers below.</p>
@@ -854,6 +855,7 @@ async function pollLive() {
   } catch (e) { return; }   // no ar_live table yet
   if (replay.active) return;
   const r = rows.find(x => sessionId && x.session_id === sessionId) || rows[0];   // prefer the selected session
+  liveLookImage = r && r.target_id ? r.target_name : '';
   liveLook = r && r.target_id ? `looking at ${r.target_name}${r.mode ? ` (${r.mode === 'ai' ? 'AI assisted' : 'Generic'})` : ''}` : '';
   if (!r) { showViewing(null); return; }
   const where = r.session_name ? ` · session "${r.session_name}"` : '';
@@ -1338,19 +1340,19 @@ function setView(mode) {
 
 /* ---------- room model view (room_view.js) ---------- */
 // The real space as a 3D model, lined up with the Pozyx coordinates; saved in table room_model.
-let room = null, roomCfg = null, roomLoaded = false, liveLook = '';
+let room = null, roomCfg = null, roomLoaded = false, liveLook = '', liveLookImage = '';
 const ALIGN = { alOx: 'offset_x', alOy: 'offset_y', alOz: 'offset_z', alRot: 'rotation_deg', alScale: 'scale' };
 const alignOf = (c) => ({ ox: c.offset_x, oy: c.offset_y, oz: c.offset_z, rot: c.rotation_deg, scale: c.scale });
 function roomInfo(text, isErr) { $('roomInfo').textContent = text; $('roomInfo').classList.toggle('err', !!isErr); }
 
 // What the room view draws: the same anchors and tags as the other views
 function roomState() {
-  let look = '';
+  let look = '', lookImage = '';
   if (replay.active && replay.data.looks) {
     const lk = replay.data.looks.find(l => !l.outside && replay.t >= l.a && replay.t <= l.b);
-    if (lk) look = `looking at ${lk.name}${lk.mode ? ` (${lk.mode})` : ''}`;
-  } else look = liveLook;
-  return { anchors, tags, showTrail: $('chkTrail').checked, tapMarks: tapMarksToDraw(), look };
+    if (lk) { look = `looking at ${lk.name}${lk.mode ? ` (${lk.mode})` : ''}`; lookImage = lk.name; }
+  } else if (!replay.active) { look = liveLook; lookImage = liveLookImage; }
+  return { anchors, tags, showTrail: $('chkTrail').checked, tapMarks: tapMarksToDraw(), look, lookImage };
 }
 async function openRoom() {
   if (!room) {
@@ -1378,9 +1380,19 @@ async function loadRoomConfig() {
   try {
     await room.loadModel(pozyxDb.fileUrl(roomCfg.model_path), (p) => roomInfo(`Loading ${roomCfg.model_name}… ${Math.round(p * 100)}%`));
     roomInfo(`Model: ${roomCfg.model_name}`);
+    showGlowMatches();
   } catch (e) {
     roomInfo(`Could not load the model: ${e.message}`, true);
   }
+}
+// Which AR images have a part in the model that lights up (same name as texture, material or object)
+async function showGlowMatches() {
+  const c = await loadArContent();
+  const names = c ? [...c.targets.values()].map(t => t.name) : [];
+  if (!names.length || !room) { $('roomGlow').textContent = ''; return; }
+  const m = room.glowMatches(names), missing = m.filter(x => !x.found).map(x => x.name);
+  $('roomGlow').textContent = `Lights up when looked at: ${m.length - missing.length} of ${m.length} AR images found in the model` +
+    (missing.length ? ` (not found: ${missing.join(', ')}; name a texture, material or object like the image)` : '.');
 }
 function renderAlignInputs() {
   const c = roomCfg || {};
