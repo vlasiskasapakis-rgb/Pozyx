@@ -173,6 +173,10 @@
       </div>
       <input type="file" id="fileRoom" accept=".glb,.gltf" hidden>
       <div id="roomGlow" class="hint"></div>
+      <details id="roomNames" class="hint" hidden>
+        <summary>Names in the model</summary>
+        <div id="roomNamesList" style="max-height:220px; overflow:auto; margin-top:6px; white-space:normal"></div>
+      </details>
       <h2 style="margin-top:14px">Line up with the Pozyx positions</h2>
       <button id="btnAlign" class="primary">Align with A1 and A2…</button>
       <p class="hint" id="alignHint">Click the floor below anchor A1 in the model, then the floor below A2. Or set the numbers below.</p>
@@ -841,7 +845,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-02a';
+const CODE_VERSION = '2026-11-02b';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1425,10 +1429,19 @@ async function showGlowMatches() {
     if (!names.length) { el.textContent = 'No images in the AR editor yet, so nothing lights up.'; return; }
     const m = room.glowMatches(names), missing = m.filter(x => !x.found).map(x => x.name);
     el.textContent = `Lights up when looked at: ${m.length - missing.length} of ${m.length} AR images found in the model` +
-      (missing.length ? ` (not found: ${missing.join(', ')}; name a texture, material or object like the image)` : '.');
+      (missing.length ? ` (not found: ${missing.join(', ')}; a texture, material or object name must contain the image name)` : '.');
+    showModelNames();
   } catch (e) {
     el.textContent = `Could not check which AR images are in the model: ${e.message}`;
   }
+}
+// The model's texture and material names, to compare with the AR image names
+function showModelNames() {
+  const n = room.modelNames();
+  const list = (title, items) => `<b>${title} (${items.length})</b><br>${items.length ? items.map(esc).join(', ') : 'none'}`;
+  $('roomNamesList').innerHTML = list('Textures', n.textures) + '<br><br>' + list('Materials', n.materials) +
+    (n.unnamedTextures ? `<br><br>${n.unnamedTextures} texture${n.unnamedTextures === 1 ? ' has' : 's have'} no name in the file.` : '');
+  $('roomNames').hidden = false;
 }
 function renderAlignInputs() {
   const c = roomCfg || {};

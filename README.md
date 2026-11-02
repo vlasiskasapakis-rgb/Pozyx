@@ -173,11 +173,12 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    and Scale (1 = the model is in meters). The page reports the A1–A2 distance
    in the model and as measured, to check the result.
 3. Looked-at images light up: while the visitor looks at an AR image (live or
-   in a replay), the parts of the model whose texture, material or object has
-   the image's name glow green ("MIRO D5" matches the texture `MIRO_D5.jpg`,
-   the material `MIRO_D5` / `MIRO_D5_MAT`, or an object `MIRO_D5`; case,
-   extensions and spaces/dashes do not matter). The Room model panel lists
-   which AR images were found in the model.
+   in a replay), the parts of the model whose texture, material or object name
+   contains the image's name as a whole part glow green ("MIRO_A2" matches
+   `MIRO_A2.jpg`, `MIRO_A2.001`, `MIRO_A2_baseColor`, `Mat_MIRO_A2`, but not
+   `MIRO_A20`; case, extensions and spaces/dashes do not matter). The Room
+   model panel lists which AR images were found, and "Names in the model"
+   shows the model's texture and material names to compare.
 
 ## Syncing tips
 

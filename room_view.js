@@ -15,12 +15,15 @@ const FIGURE_HEIGHT = 1.7;
 const GLOW = new THREE.Color(0x33ff66);   // looked-at images glow this colour
 const GLOW_FADE_S = 0.25;
 
-// "Miro D5.jpg", "MIRO_D5_MAT", "textures/miro-d5.png" -> "MIRO_D5"
-export function imageKey(name) {
-  let k = String(name || '').split(/[\\/]/).pop().replace(/\.(jpe?g|png|webp|gif|bmp|ktx2|basis)$/i, '');
-  k = k.replace(/\s*\(instance\)$/i, '').trim().toUpperCase().replace(/[\s-]+/g, '_');
-  return k.replace(/_MAT$/, '');
-}
+// Names compared in capitals with every run of other characters as "_":
+// "Miro A2.jpg" -> "MIRO_A2_JPG", "textures/miro-a2.png" -> "TEXTURES_MIRO_A2_PNG"
+const norm = (n) => String(n || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+// An image's name, without a file extension: "MIRO A2.jpg" -> "MIRO_A2"
+export const imageKey = (name) => norm(String(name || '').replace(/\.(jpe?g|png|webp|gif|bmp|ktx2|basis|tga|tiff?)$/i, ''));
+// A model name belongs to an image when it contains the image's name as a whole part:
+// "MIRO_A2" matches MIRO_A2.jpg, MIRO_A2.001, MIRO_A2_baseColor, Mat_MIRO_A2, textures/MIRO_A2.png,
+// but not MIRO_A20.
+const namesMatch = (n, k) => !!k && (n === k || n.startsWith(k + '_') || n.endsWith('_' + k) || n.includes('_' + k + '_'));
 
 // getState() returns { anchors: Map id->{x,y,z}, tags: Map id->{pos,trail,color}, showTrail, tapMarks: [{x,y,z,label}], look: text }
 export function createRoomView(container, getState) {
@@ -202,33 +205,37 @@ export function createRoomView(container, getState) {
   }
 
   // Parts of the model that light up when the visitor looks at an image: materials whose
-  // texture, material name or object name is the image's name
-  const glow = new Map();   // image key -> [{mat, color, emissive, w}]
-  let glowEntries = [];     // every material that can glow, once
+  // texture names, material name or object name contain the image's name (see namesMatch)
+  let glowEntries = [];          // every material, once: {mat, names, color, emissive, w}
+  const glowCache = new Map();   // image key -> entries that belong to it
+  const MAPS = ['map', 'emissiveMap', 'aoMap', 'lightMap', 'normalMap', 'roughnessMap', 'metalnessMap', 'alphaMap'];
   function indexGlow() {
-    glow.clear();
     glowEntries = [];
-    const seen = new Map();   // material -> its entry, so a shared material is handled once
+    glowCache.clear();
+    const seen = new Map();   // a material shared by several objects is handled once
     model.traverse((o) => {
       if (!o.isMesh) return;
       for (const m of [].concat(o.material)) {
         if (!m) continue;
-        const keys = new Set([m.map && m.map.name, m.name, o.name].filter(Boolean).map(imageKey).filter(Boolean));
-        let entry = seen.get(m);
-        if (!entry) {
-          entry = { mat: m, color: m.color ? m.color.clone() : null, emissive: m.emissive ? m.emissive.clone() : null, w: 0 };
-          seen.set(m, entry);
+        let e = seen.get(m);
+        if (!e) {
+          e = { mat: m, names: new Set(), textures: new Set(), color: m.color ? m.color.clone() : null, emissive: m.emissive ? m.emissive.clone() : null, w: 0 };
+          seen.set(m, e);
+          glowEntries.push(e);
+          if (m.name) e.names.add(norm(m.name));
+          for (const k of MAPS) if (m[k] && m[k].name) { e.names.add(norm(m[k].name)); e.textures.add(m[k].name); }
         }
-        if (keys.size && !entry.listed) { entry.listed = true; glowEntries.push(entry); }
-        for (const k of keys) {
-          if (!glow.has(k)) glow.set(k, []);
-          if (!glow.get(k).includes(entry)) glow.get(k).push(entry);
-        }
+        if (o.name) e.names.add(norm(o.name));
       }
     });
   }
+  function entriesFor(imageName) {
+    const k = imageKey(imageName);
+    if (!glowCache.has(k)) glowCache.set(k, glowEntries.filter(e => [...e.names].some(n => namesMatch(n, k))));
+    return glowCache.get(k);
+  }
   function updateGlow(lookImage, dt) {
-    const on = new Set(lookImage ? glow.get(imageKey(lookImage)) || [] : []);
+    const on = new Set(lookImage ? entriesFor(lookImage) : []);
     const step = Math.min(1, dt / GLOW_FADE_S);
     for (const e of glowEntries) {
       const goal = on.has(e) ? 1 : 0;
@@ -240,7 +247,18 @@ export function createRoomView(container, getState) {
   }
   // which of these image names have something to light up in the model
   function glowMatches(names) {
-    return names.map(n => ({ name: n, found: glow.has(imageKey(n)) }));
+    return names.map(n => ({ name: n, found: entriesFor(n).length > 0 }));
+  }
+  // texture and material names in the model, to compare with the image names
+  function modelNames() {
+    const textures = new Set(), materials = new Set();
+    let unnamedTextures = 0;
+    for (const e of glowEntries) {
+      if (e.mat.name) materials.add(e.mat.name);
+      for (const t of e.textures) textures.add(t);
+      for (const k of MAPS) if (e.mat[k] && !e.mat[k].name) unnamedTextures++;
+    }
+    return { textures: [...textures].sort(), materials: [...materials].sort(), unnamedTextures };
   }
   function removeModel() {
     if (model) modelGroup.remove(model);
@@ -286,7 +304,7 @@ export function createRoomView(container, getState) {
   return {
     show() { if (!running) { running = true; resize(); requestAnimationFrame(frame); } },
     hide() { running = false; label.hidden = true; },
-    loadModel, removeModel, setAlign, resetView, pick, alignFromPoints, glowMatches,
+    loadModel, removeModel, setAlign, resetView, pick, alignFromPoints, glowMatches, modelNames,
     get hasModel() { return !!model; },
     get model() { return model; },
   };
