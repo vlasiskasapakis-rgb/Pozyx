@@ -226,8 +226,18 @@ arrow on the first tag (the phone's tag).
 
 Set up once: in Room view → **Compass**, hold the phone (AR viewer running) at
 A1 with its back camera pointing at A2 and click **Phone points along A1 → A2
-now** (or type the compass bearing of A1 → A2). Exports include
-`xAxisHeading` and `orientation`; Unity uses them (see `unity/README.md`).
+now** (or type the compass bearing of A1 → A2).
+If the arrow points backwards, click **Arrow points backwards: turn 180°**.
+More reliable: **set up by pointing at anchors**. While the phone's tag is
+tracked, stand a few meters from an anchor, point the back camera at it,
+choose it in the list and click **Phone points at this anchor now**; then do
+the same for a second anchor at least 45° to the side. This works out the
+compass bearing and whether the room turns the other way: Pozyx's own
+calibration cannot tell left from right, so when anchor A3 is to the right of
+A1 → A2 (seen from above) its y axis is mirrored; the page then turns the
+arrow the other way (**Turns the other way**, saved with the setup).
+Exports include `xAxisHeading`, `compassReversed` and `orientation`; Unity
+uses them (see `unity/README.md`).
 Indoor compasses can be off by 10-30° near metal and electronics.
 
 ## Syncing tips

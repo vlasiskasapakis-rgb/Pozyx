@@ -37,6 +37,7 @@ using UnityEngine;
     public PozyxAnchor[] anchors; public string[] tags; public PozyxPosition[] positions;
     public PozyxLook[] looks; public PozyxTap[] taps;
     public float xAxisHeading = -1f;   // compass bearing of the room's x axis (A1 -> A2); -1 = not set up
+    public bool compassReversed;       // true when the room is mirrored compared with the compass
     public PozyxOrientation[] orientation;
 }
 
@@ -315,7 +316,7 @@ public class PozyxReplay : MonoBehaviour
             pitch = a.pitch + (b.pitch - a.pitch) * k;
         }
         // compass bearing -> angle from the room's x axis (counter-clockwise, Pozyx x, y), then to Unity like positions
-        float ang = (Data.xAxisHeading - heading) * Mathf.Deg2Rad, pr = pitch * Mathf.Deg2Rad;
+        float ang = (Data.compassReversed ? heading - Data.xAxisHeading : Data.xAxisHeading - heading) * Mathf.Deg2Rad, pr = pitch * Mathf.Deg2Rad;
         float px = Mathf.Cos(ang) * Mathf.Cos(pr), py = Mathf.Sin(ang) * Mathf.Cos(pr);
         var local = Quaternion.Euler(0f, rotationY, 0f) * new Vector3(mirrorX ? -px : px, Mathf.Sin(pr), py);
         dir = roomOrigin != null ? roomOrigin.TransformDirection(local) : local;

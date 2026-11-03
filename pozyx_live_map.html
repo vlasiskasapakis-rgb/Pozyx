@@ -219,6 +219,16 @@
           <input type="number" id="xAxisHeading" step="1" min="0" max="360" placeholder="not set"></label>
         <button id="btnCompass" title="Hold the phone (AR viewer running) at A1 with its back camera pointing at A2, then click">Phone points along A1 → A2 now</button>
       </div>
+      <div class="row" style="margin-top:6px; align-items:center; gap:6px; font-size:13px">
+        <button data-turn="180" title="The arrow points exactly backwards">Arrow points backwards: turn 180°</button>
+        <label style="display:flex; align-items:center; gap:6px" title="The arrow turns left when you turn right"><input type="checkbox" id="compassRev"> Turns the other way</label>
+      </div>
+      <p class="hint" style="margin-bottom:4px"><b>Set up by pointing at anchors</b> (fixes a backwards or mirrored arrow):
+        stand anywhere with the phone tag being tracked, point the back camera at an anchor, choose it and click. Then do the same for another anchor at least 45° to the side.</p>
+      <div class="row" style="align-items:center; gap:6px; font-size:13px">
+        <select id="compassAnchor"></select>
+        <button id="btnCompassAim">Phone points at this anchor now</button>
+      </div>
       <p class="hint" id="compassHint">Needed once, so the phone's compass direction can be shown in the room.</p>
       <h2 style="margin-top:14px">Line up with the Pozyx positions</h2>
       <button id="btnAlign" class="primary">Align with A1 and A2…</button>
@@ -891,7 +901,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-02n';
+const CODE_VERSION = '2026-11-03a';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1180,6 +1190,7 @@ function exportSession(data, shift) {
     })),
     taps: taps.map(({ tp, t }) => ({ t: r3(t), label: tp.label || '', unixMs: tp.unix_ms || 0 })),
     xAxisHeading: xAxisHeading === null ? -1 : xAxisHeading,   // -1 = compass not set up
+    compassReversed,   // true: room angle = heading - xAxisHeading (the room is mirrored compared with the compass)
     orientation: (data.poses || []).map(q => ({ t: r3(q.t + shift), heading: q.heading, pitch: q.pitch, roll: q.roll || 0 }))
       .filter(q => q.t >= -1 && q.t <= dur + 1),
   };
@@ -1478,22 +1489,28 @@ const ALIGN = { alOx: 'offset_x', alOy: 'offset_y', alOz: 'offset_z', alRot: 'ro
 const alignOf = (c) => ({ ox: c.offset_x, oy: c.offset_y, oz: c.offset_z, rot: c.rotation_deg, scale: c.scale });
 /* ---------- phone direction (from the AR viewer's phone_pose / ar_live) ---------- */
 // Compass bearings are turned into room directions with the bearing of the room's x axis (A1 -> A2).
-let liveDir = null, xAxisHeading = null;
+let liveDir = null, xAxisHeading = null, compassReversed = false;
+// x_axis_heading is saved as 0-360, plus 360 when the compass turns the other way (Pozyx can set up
+// its y axis mirrored compared with the real room, depending on which side anchor A3 is on)
+const compassRaw = (v) => { const n = +v; return { v: ((n % 360) + 360) % 360, rev: n >= 360 }; };
 async function loadCompass() {
   if (!hasDb()) return;
   try {
     const r = (await pozyxDb.request('room_model?select=x_axis_heading&id=eq.current'))[0];
-    if (r && r.x_axis_heading !== null && r.x_axis_heading !== undefined) setXAxisHeading(+r.x_axis_heading, false);
+    if (r && r.x_axis_heading !== null && r.x_axis_heading !== undefined) { const c = compassRaw(r.x_axis_heading); setXAxisHeading(c.v, false, c.rev); }
   } catch (e) { /* older database */ }
 }
-function setXAxisHeading(v, save) {
+function setXAxisHeading(v, save, reversed = compassReversed) {
   xAxisHeading = Number.isFinite(v) ? ((v % 360) + 360) % 360 : null;
+  compassReversed = !!reversed;
   $('xAxisHeading').value = xAxisHeading === null ? '' : Math.round(xAxisHeading);
+  $('compassRev').checked = compassReversed;
   scheduleDraw();
   if (!save || !hasDb()) return;
-  if (roomCfg) { roomCfg.x_axis_heading = xAxisHeading; saveRoomCfg(); return; }
+  const stored = xAxisHeading === null ? null : xAxisHeading + (compassReversed ? 360 : 0);
+  if (roomCfg) { roomCfg.x_axis_heading = stored; saveRoomCfg(); return; }
   // room settings not loaded: save only this, so the model's alignment is not touched
-  pozyxDb.upsert('room_model', [{ id: 'current', x_axis_heading: xAxisHeading }], 'id')
+  pozyxDb.upsert('room_model', [{ id: 'current', x_axis_heading: stored }], 'id')
     .catch(e => { $('compassHint').textContent = `Could not save: ${/x_axis_heading/.test(e.message) ? 'run the updated supabase/schema.sql in Supabase' : e.message}`; });
 }
 // Phone direction now: {heading, pitch} (degrees), from the replay or live
@@ -1515,7 +1532,35 @@ function poseAt(list, t) {
 }
 // Room direction (radians, counter-clockwise from the x axis) of a compass bearing; null without the compass setup
 function roomAngle(heading) {
-  return xAxisHeading === null ? null : (xAxisHeading - heading) * Math.PI / 180;
+  return xAxisHeading === null ? null : (compassReversed ? heading - xAxisHeading : xAxisHeading - heading) * Math.PI / 180;
+}
+// Compass setup from pointing at anchors: each reading is (compass bearing, room direction from the
+// tag to the anchor). One reading sets the bearing of the x axis; two at different directions also
+// tell whether the room's axes are mirrored compared with the compass.
+let compassReadings = [];
+const wrap180 = (d) => ((d % 360) + 540) % 360 - 180;
+function fillCompassAnchors() {
+  const sel = $('compassAnchor'), keep = sel.value;
+  sel.innerHTML = [...anchors.keys()].map((id, i) => `<option value="${id}">A${i + 1} (${id})</option>`).join('') || '<option value="">No anchors yet</option>';
+  if (keep && anchors.has(keep)) sel.value = keep;
+}
+function compassFromReadings() {
+  const solve = (rev) => compassReadings.map(r => ((rev ? r.heading - r.room : r.heading + r.room) % 360 + 360) % 360);
+  if (compassReadings.length === 1) {
+    const x = solve(compassReversed)[0];
+    setXAxisHeading(x, true, compassReversed);
+    return `A1 → A2 now points to ${Math.round(x)}°. Point at a second anchor (at least 45° to the side) to check the turning direction too.`;
+  }
+  const [a, b] = compassReadings.slice(-2);
+  if (Math.abs(wrap180(a.room - b.room)) < 30) { compassReadings = [b]; return 'These two anchors are in almost the same direction from you: choose one more to the side.'; }
+  const fit = [false, true].map(rev => {
+    const [x1, x2] = solve(rev).slice(-2);
+    return { rev, x: (x1 + wrap180(x2 - x1) / 2 + 360) % 360, err: Math.abs(wrap180(x2 - x1)) };
+  }).sort((p, q) => p.err - q.err)[0];
+  setXAxisHeading(fit.x, true, fit.rev);
+  compassReadings = [];
+  return `Saved: A1 → A2 points to ${Math.round(fit.x)}°` + (fit.rev ? ', turning the other way. This means the Pozyx y axis is mirrored (anchor A3 is to the right of A1 → A2 seen from above), so the top view is mirrored too' : '') +
+    `. The two readings agree within ${Math.round(fit.err)}°` + (fit.err > 25 ? ': that is a lot, metal nearby may disturb the compass; try again away from it.' : '.');
 }
 
 /* ---------- anchor planning (room_view.js draws it) ---------- */
@@ -1641,7 +1686,7 @@ async function loadRoomConfig() {
     return;
   }
   renderAlignInputs();
-  if (roomCfg && roomCfg.x_axis_heading !== null && roomCfg.x_axis_heading !== undefined) setXAxisHeading(+roomCfg.x_axis_heading, false);
+  if (roomCfg && roomCfg.x_axis_heading !== null && roomCfg.x_axis_heading !== undefined) { const c = compassRaw(roomCfg.x_axis_heading); setXAxisHeading(c.v, false, c.rev); }
   if (!roomCfg || !roomCfg.model_path) { roomInfo('No room model yet: upload a GLB of the space (in meters).'); room.resetView(); return; }
   room.setAlign(alignOf(roomCfg));
   roomInfo(`Loading ${roomCfg.model_name}…`);
@@ -1985,6 +2030,30 @@ $('btnCompass').onclick = () => {
   setXAxisHeading(liveDir.heading, true);
   $('compassHint').textContent = `Saved: A1 → A2 points to ${Math.round(xAxisHeading)}°. The phone's direction now shows in the room and the top view.`;
 };
+$('compassAnchor').addEventListener('focus', fillCompassAnchors);
+$('btnCompassAim').onclick = () => {
+  fillCompassAnchors();
+  const a = anchors.get($('compassAnchor').value), tag = [...tags.values()][0];
+  if (!liveDir) { $('compassHint').textContent = 'No direction from the phone yet: start the AR viewer on the phone (allow motion sensors) and wait a few seconds.'; return; }
+  if (!a) { $('compassHint').textContent = 'No anchor positions yet: connect the Pozyx (or load them) first.'; return; }
+  if (!tag || !tag.pos || Date.now() - tag.last > 3000) { $('compassHint').textContent = 'The phone tag is not being tracked right now: the page needs to know where you stand.'; return; }
+  const dx = a.x - tag.pos.x, dy = a.y - tag.pos.y;
+  if (Math.hypot(dx, dy) < 1000) { $('compassHint').textContent = 'You are less than 1 m from that anchor: step back a few meters for an accurate reading.'; return; }
+  compassReadings.push({ heading: liveDir.heading, room: Math.atan2(dy, dx) * 180 / Math.PI });
+  $('compassHint').textContent = compassFromReadings();
+};
+// manual quarter / half turns of the arrow (turning the arrow left = a bigger room angle)
+document.querySelectorAll('[data-turn]').forEach(btn => btn.onclick = () => {
+  if (xAxisHeading === null) { $('compassHint').textContent = 'Set up the compass first.'; return; }
+  const turn = +btn.dataset.turn;
+  setXAxisHeading(xAxisHeading + (compassReversed ? -turn : turn), true);
+  $('compassHint').textContent = `Turned the arrow ${Math.abs(turn)}°${turn === 180 ? '' : turn > 0 ? ' to the left' : ' to the right'}: A1 → A2 now points to ${Math.round(xAxisHeading)}°.`;
+});
+$('compassRev').addEventListener('change', () => {
+  if (xAxisHeading === null) { $('compassRev').checked = false; $('compassHint').textContent = 'Set up the compass first.'; return; }
+  setXAxisHeading(xAxisHeading, true, $('compassRev').checked);
+  $('compassHint').textContent = compassReversed ? 'The arrow now turns the other way. If it is still wrong, set up by pointing at two anchors.' : 'The arrow turns the normal way.';
+});
 $('xAxisHeading').addEventListener('change', () => {
   const v = parseFloat($('xAxisHeading').value);
   setXAxisHeading(Number.isFinite(v) ? v : NaN, true);
