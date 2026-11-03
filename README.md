@@ -161,6 +161,11 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
 
 ## 6. Room view (3D model of the space)
 
+The side panels fold away: click a panel's title (Room model, Tags, Anchors,
+…) to close or open it, and the Room model's sections (Plan anchors, Compass,
+Line up) open and close on their own. The page remembers this on each
+computer. **Visitor is viewing** sits at the top of the side column.
+
 In the live map, **Room view** shows your space as a 3D model (GLB, in meters)
 with the visitor as a 1.7 m figure walking in it, the trail, the anchors and
 phone taps; live and in replays. Needs the updated `supabase/schema.sql`
