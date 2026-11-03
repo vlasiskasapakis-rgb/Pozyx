@@ -177,6 +177,11 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    anchor A1 in the model, then below A2. Fine-tune with Move x / up / z, Turn
    and Scale (1 = the model is in meters). The page reports the A1–A2 distance
    in the model and as measured, to check the result.
+   **Mirror → Flipped**: when you walk to one side of the room and the model
+   shows you on the other side, tick it. The model flips over the A1 – A2
+   line, and A1 and A2 stay where they are. This happens when anchor A3 is to
+   the right of A1 → A2 (seen from above): Pozyx's own calibration cannot tell
+   left from right. It is saved with the alignment (as a negative scale).
    **Detail** (High / Balanced / Light, saved per computer): Balanced and
    Light draw at normal sharpness and shrink textures to 2048 / 1024 px for
    laptops. The view only redraws when something changes, and objects that

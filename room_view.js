@@ -262,12 +262,15 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     needsRender = true;
     modelGroup.position.set(+a.ox || 0, +a.oy || 0, +a.oz || 0);
     modelGroup.rotation.set(0, (+a.rot || 0) * Math.PI / 180, 0);
-    modelGroup.scale.setScalar(+a.scale || 1);
+    modelGroup.scale.setScalar(Math.abs(+a.scale) || 1);
+    mirrorGroup.scale.x = +a.scale < 0 ? -1 : 1;   // a negative scale means mirrored
   }
 
-  // The model sits in "upright" (turns a Z-up model to Y-up) inside modelGroup (the alignment)
-  const upright = new THREE.Group();
-  modelGroup.add(upright);
+  // The model sits in "upright" (turns a Z-up model to Y-up), inside "mirrorGroup" (flips the model's
+  // own x when mirrored), inside modelGroup (the alignment)
+  const mirrorGroup = new THREE.Group(), upright = new THREE.Group();
+  modelGroup.add(mirrorGroup);
+  mirrorGroup.add(upright);
   function setUpright(zUp) { upright.rotation.set(zUp ? -Math.PI / 2 : 0, 0, 0); needsRender = true; }
 
   // GLB: one file. FBX: opts.files maps texture file names (lower case) to their addresses, because
@@ -924,7 +927,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   // Alignment that puts model point p1 on the floor below A1 and p2 in the direction of A2
   // (scale is kept). a1, a2 = anchor positions in mm.
   function alignFromPoints(m1, m2, a1, a2, scale) {
-    const s = +scale || 1;
+    const s = Math.abs(+scale) || 1;
     const p1 = new THREE.Vector3(m1.x, m1.y, m1.z), p2 = new THREE.Vector3(m2.x, m2.y, m2.z);
     const w1 = P(a1.x, a1.y, 0), w2 = P(a2.x, a2.y, 0);
     const angModel = Math.atan2(-(p2.z - p1.z), p2.x - p1.x);
@@ -936,12 +939,23 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     let deg = rot * 180 / Math.PI;
     deg = ((deg + 540) % 360) - 180;
     return { ox: w1.x - p1w.x, oy: -p1w.y, oz: w1.z - p1w.z, rot: deg, scale: s, modelDist, pozyxDist };
+  }  // Mirror the model (or undo it) while the floor points below A1 and A2 stay where they are, so the
+  // model flips over the A1-A2 line: for when the visitor moves to the wrong side of the room
+  // (Pozyx's own calibration cannot tell left from right)
+  function mirrorKeepingAnchors(a, a1, a2) {
+    setAlign(a);
+    modelGroup.updateMatrixWorld(true);
+    const m1 = modelGroup.worldToLocal(P(a1.x, a1.y, 0)), m2 = modelGroup.worldToLocal(P(a2.x, a2.y, 0));
+    m1.x = -m1.x; m2.x = -m2.x;   // the same model spots after flipping the model's x
+    const r = alignFromPoints(m1, m2, a1, a2, a.scale);
+    return { ox: r.ox, oy: r.oy, oz: r.oz, rot: r.rot, scale: -(+a.scale || 1) };
   }
+
 
   return {
     show() { if (!running) { running = true; needsRender = true; resize(); requestAnimationFrame(frame); } },
     hide() { running = false; label.hidden = true; },
-    loadModel, removeModel, setAlign, setUpright, resetView, pick, alignFromPoints, glowMatches, modelNames,
+    loadModel, removeModel, setAlign, mirrorKeepingAnchors, setUpright, resetView, pick, alignFromPoints, glowMatches, modelNames,
     get hasModel() { return !!model; },
     get model() { return model; },
     get stats() { return stats; },
