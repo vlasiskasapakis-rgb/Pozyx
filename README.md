@@ -211,7 +211,14 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    and the panel lists the stops,
    the meters walked between them and posters not found in the model.
    Looks of the same poster less than 15 s apart count as one stop; glances
-   under a second are left out. **▶ Play** walks a dot along the route and
+   under a second are left out. **Use Pozyx recordings when the session has
+   them** (on by default): where the session's recordings cover the looks,
+   each stop is put where the phone's tag really was during the look (the
+   median position), and the walk to the next stop is the recorded track,
+   with meters counted only for moves over 25 cm (so standing still adds
+   nothing). The list marks those as **measured** and the rest as estimated.
+   A poster missing from the model still gets a stop when Pozyx has its
+   position. **▶ Play** walks a dot along the route and
    lights up each poster as it gets there. It is an estimate: it shows the
    order and the likely way, not where the visitor really walked.
 5. **Plan anchors (before installing)**: tick **Show anchor plan and

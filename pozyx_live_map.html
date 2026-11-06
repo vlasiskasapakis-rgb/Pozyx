@@ -232,6 +232,7 @@
         <button id="routePlay" disabled>▶ Play</button>
         <button id="routeHide" disabled>Hide</button>
       </div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:6px" title="Where the session has Pozyx recordings, the stops are put where the visitor really stood and the meters come from the recorded walk"><input type="checkbox" id="routePozyx" checked> Use Pozyx recordings when the session has them</label>
       <p class="hint" id="routeInfo"></p>
       <div id="routeList"></div>
       </details>
@@ -968,7 +969,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-06c';
+const CODE_VERSION = '2026-11-06d';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1654,6 +1655,47 @@ function routeStopsFrom(rows) {
   }
   return stops.filter(x => x.seconds >= 1);
 }
+// The Pozyx track of the phone's tag around the looks, from the session's recordings (null if none)
+async function pozyxTrackFor(id, from, to) {
+  const recs = await pozyxDb.request(`recordings?select=id,started_at_unix_ms,duration_s&${sessionFilter(id === '-' ? '' : id)}&order=started_at_unix_ms.asc`);
+  const pts = [];
+  for (const r of recs) {
+    const a = +r.started_at_unix_ms, b = a + (+r.duration_s || 0) * 1000;
+    if (b < from || a > to) continue;
+    for (let off = 0; ; off += 1000) {
+      const page = await pozyxDb.request(`positions?select=tag,unix_ms,x,y&recording_id=eq.${encodeURIComponent(r.id)}&unix_ms=gte.${from}&unix_ms=lte.${to}&order=unix_ms.asc&limit=1000&offset=${off}`);
+      pts.push(...page);
+      $('routeInfo').textContent = `Loading the Pozyx recording… ${pts.length} positions`;
+      if (page.length < 1000) break;
+    }
+  }
+  if (!pts.length) return null;
+  // the phone's tag: the one with the most positions
+  const count = new Map();
+  for (const q of pts) count.set(q.tag, (count.get(q.tag) || 0) + 1);
+  const tag = [...count.entries()].sort((p, q) => q[1] - p[1])[0][0];
+  // one averaged point per second takes out most of the jitter
+  const bins = new Map();
+  for (const q of pts) {
+    if (q.tag !== tag || !Number.isFinite(+q.x) || !Number.isFinite(+q.y)) continue;
+    const k = Math.floor(+q.unix_ms / 1000), bn = bins.get(k) || { t: k * 1000 + 500, x: 0, y: 0, n: 0 };
+    bn.x += +q.x; bn.y += +q.y; bn.n++;
+    bins.set(k, bn);
+  }
+  return [...bins.values()].map(bn => ({ t: bn.t, x: bn.x / bn.n, y: bn.y / bn.n })).sort((p, q) => p.t - q.t);
+}
+// Meters walked along a track: only moves of more than 25 cm from the last counted point count,
+// so standing still (Pozyx jitter of a few cm) adds nothing
+function walkedMeters(track) {
+  let len = 0, last = null;
+  for (const q of track) {
+    if (!last) { last = q; continue; }
+    const d = Math.hypot(q.x - last.x, q.y - last.y) / 1000;
+    if (d > 0.25) { len += d; last = q; }
+  }
+  return len;
+}
+const median = (v) => { const s = [...v].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : NaN; };
 async function showRouteFromLooks() {
   if (!room || !room.hasModel) { $('routeInfo').textContent = 'Load a room model first (Upload GLB or FBX folder).'; return; }
   const id = $('routeSession').value;
@@ -1666,19 +1708,46 @@ async function showRouteFromLooks() {
   } catch (e) { $('routeInfo').textContent = `Could not load the looks: ${e.message}`; return; }
   const stops = routeStopsFrom(rows);
   if (!stops.length) { $('routeInfo').textContent = 'No looks in this session (looks under a second are left out).'; $('routeList').innerHTML = ''; return; }
-  const res = await room.showRoute(stops.map(x => ({ name: x.name, seconds: x.seconds, label: clockTime(x.start).slice(0, 8) })),
+  const items = stops.map(x => ({ name: x.name, seconds: x.seconds, label: clockTime(x.start).slice(0, 8) }));
+  let measuredStops = 0, measuredLegs = 0;
+  if ($('routePozyx').checked) {
+    let track = null;
+    try { track = await pozyxTrackFor(id, stops[0].start - 5000, stops[stops.length - 1].end + 5000); } catch (e) { track = null; }
+    if (track && track.length) {
+      const during = (a, b) => track.filter(q => q.t >= a && q.t <= b);
+      stops.forEach((x, i) => {
+        const at = during(x.start - 500, x.end + 500);
+        if (at.length) { items[i].pos = { x: median(at.map(q => q.x)), y: median(at.map(q => q.y)) }; measuredStops++; }
+        const nx = stops[i + 1];
+        if (!nx) return;
+        const way = during(x.end, nx.start);
+        // the recording must cover the walk (no gap of more than 5 s)
+        const covered = way.length && way[0].t - x.end < 5000 && nx.start - way[way.length - 1].t < 5000 && way.every((q, k) => !k || q.t - way[k - 1].t < 5000);
+        if (covered && items[i].pos) {
+          let last = items[i].pos;   // drawn without the standing-still jitter
+          items[i].legPts = way.filter(q => { if (Math.hypot(q.x - last.x, q.y - last.y) < 250) return false; last = q; return true; });
+          items[i].legLen = walkedMeters([{ ...items[i].pos, t: x.end }, ...way]);
+          measuredLegs++;
+        }
+      });
+    }
+  }
+  const res = await room.showRoute(items,
     (msg) => { $('routeInfo').textContent = msg; });
   if (!res) return;
   $('routePlay').disabled = $('routeHide').disabled = !res.stops.length;
   $('routePlay').textContent = '▶ Play';
   const mins = (stops[stops.length - 1].end - stops[0].start) / 60000;
   $('routeInfo').textContent = res.stops.length
-    ? `${res.stops.length} stop${res.stops.length === 1 ? '' : 's'}, about ${res.total.toFixed(0)} m of walking in ${mins < 1 ? '<1' : Math.round(mins)} min.` +
+    ? `${res.stops.length} stop${res.stops.length === 1 ? '' : 's'}, ${res.total.toFixed(0)} m of walking in ${mins < 1 ? '<1' : Math.round(mins)} min.` +
       (res.missing.length ? ` Not found in the model (left out): ${[...new Set(res.missing)].join(', ')}.` : '')
     : `None of the scanned posters were found in the model: ${[...new Set(res.missing)].join(', ')}. Name their materials or textures like the AR images.`;
   $('routeList').innerHTML = res.stops.length ? '<table>' + res.stops.map((x, i) =>
     `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s</span></td>` +
-    `<td class="walk">${i < res.stops.length - 1 ? `→ ${x.walk.toFixed(1)} m${x.direct ? ' (straight line: no way round found)' : ''}` : 'end'}</td></tr>`).join('') + '</table>' : '';
+    `<td class="walk">${i < res.stops.length - 1 ? (x.walkMeasured ? `→ ${x.walk.toFixed(1)} m <b>measured</b>` : `→ ≈ ${x.walk.toFixed(1)} m${x.direct ? ' (straight line: no way round found)' : ' estimated'}`) : 'end'}</td></tr>`).join('') + '</table>' : '';
+  if (res.stops.length && $('routePozyx').checked) $('routeInfo').textContent += measuredStops
+    ? ` Pozyx: ${measuredStops} of ${stops.length} stops placed where the visitor stood, ${measuredLegs} of ${Math.max(0, stops.length - 1)} walks measured.`
+    : ' No Pozyx recording covers these looks, so the walks are estimated.';
 }
 $('routeSession').addEventListener('change', () => { routePicked = $('routeSession').value; });
 $('routeShow').onclick = () => { fillRouteSessions(); showRouteFromLooks(); };
