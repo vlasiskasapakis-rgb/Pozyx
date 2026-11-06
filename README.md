@@ -206,7 +206,9 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    on the floor about a meter in front of it, on its open side, and the walk
    from one poster to the next goes around walls, partitions and cases (the
    shortest way over the floor of the model). The model shows numbered stops
-   with how long each poster was looked at, and the panel lists the stops,
+   with how long each poster was looked at (a poster visited twice gets one
+   marker with both numbers, e.g. "2 · 5"; labels never cover each other),
+   and the panel lists the stops,
    the meters walked between them and posters not found in the model.
    Looks of the same poster less than 15 s apart count as one stop; glances
    under a second are left out. **▶ Play** walks a dot along the route and

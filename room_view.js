@@ -916,11 +916,11 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   const routeGroup = new THREE.Group();
   scene.add(routeGroup);
   const ROUTE_COLOR = 0x3567d6;
-  let routeLabels = [], routeStops = [], routePts = [], routeLen = 0, routePlay = null, navGrid = null;
+  let routeGroups = [], routeLabels = [], routeStops = [], routePts = [], routeLen = 0, routePlay = null, navGrid = null;
   function clearRoute() {
     routeGroup.clear();
     routeLabels.forEach(l => l.remove());
-    routeLabels = []; routeStops = []; routePts = []; routeLen = 0; routePlay = null;
+    routeLabels = []; routeStops = []; routeGroups = []; routePts = []; routeLen = 0; routePlay = null;
     needsRender = true;
   }
   // the smallest part of the model that uses the image's material (the poster, not a whole wall)
@@ -1122,16 +1122,26 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       }
     }
     const lineMat = new THREE.LineDashedMaterial({ color: ROUTE_COLOR, dashSize: 0.08, gapSize: 0.06, depthTest: false });
+    // stops at (almost) the same spot, like a poster visited twice, share one marker: "1 · 6"
+    routeGroups = [];
     routeStops.forEach((s, i) => {
-      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.26, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: i === 0 ? 0x2fbf71 : ROUTE_COLOR, depthTest: false }));
-      disc.position.copy(lift(s.at));
+      const g = routeGroups.find(q => q.at.distanceTo(s.at) < 0.45);
+      if (g) g.idx.push(i); else routeGroups.push({ at: s.at, idx: [i], poster: s.poster, name: s.name });
+    });
+    routeGroups.forEach((g) => {
+      const first = g.idx[0] === 0;
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.26, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: first ? 0x2fbf71 : ROUTE_COLOR, depthTest: false }));
+      disc.position.copy(lift(g.at));
       disc.renderOrder = 6;
-      const look = new THREE.Line(new THREE.BufferGeometry().setFromPoints([lift(s.at).setY(s.at.y + 1.4), s.poster]), lineMat);
+      const num = numberSprite(g.idx.map(i => i + 1).join(' · '), first ? '#2fbf71' : '#3567d6');
+      num.position.copy(g.at).setY(g.at.y + 0.45);
+      const look = new THREE.Line(new THREE.BufferGeometry().setFromPoints([lift(g.at).setY(g.at.y + 1.4), g.poster]), lineMat);
       look.computeLineDistances();
-      routeGroup.add(disc, look);
+      routeGroup.add(disc, num, look);
       const l = document.createElement('div');
       l.className = 'roomlabel routelabel';
-      l.textContent = `${i + 1} · ${s.name}${s.seconds ? ` · ${Math.round(s.seconds)} s` : ''}`;
+      const names = [...new Set(g.idx.map(i => routeStops[i].name))].join(' / ');
+      l.textContent = `${g.idx.map(i => i + 1).join(', ')} · ${names} · ` + g.idx.map(i => `${Math.round(routeStops[i].seconds || 0)} s`).join(' + ');
       container.appendChild(l);
       routeLabels.push(l);
     });
@@ -1142,15 +1152,43 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     needsRender = true;
   }
   let routeDot = null;
+  // a round number badge that always faces the camera and is drawn on top
+  function numberSprite(text, color) {
+    text = String(text);
+    const c = document.createElement('canvas'), wide = Math.max(64, 20 + text.length * 19);
+    c.width = wide; c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = color; g.beginPath(); g.roundRect(2, 2, wide - 4, 60, 30); g.fill();
+    g.lineWidth = 4; g.strokeStyle = '#ffffff'; g.stroke();
+    g.fillStyle = '#ffffff'; g.font = `bold ${text.length > 2 ? 28 : 34}px system-ui, sans-serif`;
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, wide / 2, 34);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, sizeAttenuation: false }));   // same size on screen at any zoom
+    sp.scale.set(0.045 * wide / 64, 0.045, 1);
+    sp.renderOrder = 8;
+    return sp;
+  }
+  // labels that would cover each other are moved up until they are free (earlier stops keep their place)
   function placeRouteLabels() {
-    routeStops.forEach((s, i) => {
+    const W = container.clientWidth, H = container.clientHeight, placed = [];
+    routeGroups.forEach((s, i) => {
       const l = routeLabels[i];
       if (!l) return;
-      const v = new THREE.Vector3(s.at.x, s.at.y + 0.5, s.at.z).project(camera);
-      l.hidden = v.z > 1;
-      l.style.left = ((v.x + 1) / 2 * container.clientWidth) + 'px';
-      l.style.top = ((1 - v.y) / 2 * container.clientHeight) + 'px';
-      l.classList.toggle('now', !!routePlay && routePlay.stop === i);
+      const v = new THREE.Vector3(s.at.x, s.at.y + 0.75, s.at.z).project(camera);
+      l.classList.toggle('now', !!routePlay && s.idx.includes(routePlay.stop));
+      if (v.z > 1) { l.hidden = true; return; }
+      l.hidden = false;
+      const w = l.offsetWidth || 120, h = l.offsetHeight || 22, x = (v.x + 1) / 2 * W;
+      let y = (1 - v.y) / 2 * H;
+      for (let tries = 0; tries < 30; tries++) {
+        const hit = placed.find(r => Math.abs(r.x - x) < (r.w + w) / 2 + 2 && Math.abs(r.y - y) < (r.h + h) / 2 + 2);
+        if (!hit) break;
+        y = hit.y - (hit.h + h) / 2 - 3;
+      }
+      placed.push({ x, y, w, h });
+      l.style.left = x + 'px';
+      l.style.top = y + 'px';
     });
   }
   // a dot walks the route (2 m/s), stopping at each poster while it lights up
