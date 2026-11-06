@@ -969,7 +969,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-06d';
+const CODE_VERSION = '2026-11-06f';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1718,15 +1718,18 @@ async function showRouteFromLooks() {
       stops.forEach((x, i) => {
         const at = during(x.start - 500, x.end + 500);
         if (at.length) { items[i].pos = { x: median(at.map(q => q.x)), y: median(at.map(q => q.y)) }; measuredStops++; }
+      });
+      stops.forEach((x, i) => {
         const nx = stops[i + 1];
         if (!nx) return;
         const way = during(x.end, nx.start);
         // the recording must cover the walk (no gap of more than 5 s)
-        const covered = way.length && way[0].t - x.end < 5000 && nx.start - way[way.length - 1].t < 5000 && way.every((q, k) => !k || q.t - way[k - 1].t < 5000);
+        const covered = nx.start - x.end < 5000   // the next look follows right away
+          || (way.length && way[0].t - x.end < 5000 && nx.start - way[way.length - 1].t < 5000 && way.every((q, k) => !k || q.t - way[k - 1].t < 5000));
         if (covered && items[i].pos) {
           let last = items[i].pos;   // drawn without the standing-still jitter
           items[i].legPts = way.filter(q => { if (Math.hypot(q.x - last.x, q.y - last.y) < 250) return false; last = q; return true; });
-          items[i].legLen = walkedMeters([{ ...items[i].pos, t: x.end }, ...way]);
+          items[i].legLen = walkedMeters([{ ...items[i].pos, t: x.end }, ...way, ...(items[i + 1].pos ? [items[i + 1].pos] : [])]);
           measuredLegs++;
         }
       });
@@ -1743,7 +1746,7 @@ async function showRouteFromLooks() {
       (res.missing.length ? ` Not found in the model (left out): ${[...new Set(res.missing)].join(', ')}.` : '')
     : `None of the scanned posters were found in the model: ${[...new Set(res.missing)].join(', ')}. Name their materials or textures like the AR images.`;
   $('routeList').innerHTML = res.stops.length ? '<table>' + res.stops.map((x, i) =>
-    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s</span></td>` +
+    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s${x.sameSpotAs ? ` · same spot as ${x.sameSpotAs}` : ''}</span></td>` +
     `<td class="walk">${i < res.stops.length - 1 ? (x.walkMeasured ? `→ ${x.walk.toFixed(1)} m <b>measured</b>` : `→ ≈ ${x.walk.toFixed(1)} m${x.direct ? ' (straight line: no way round found)' : ' estimated'}`) : 'end'}</td></tr>`).join('') + '</table>' : '';
   if (res.stops.length && $('routePozyx').checked) $('routeInfo').textContent += measuredStops
     ? ` Pozyx: ${measuredStops} of ${stops.length} stops placed where the visitor stood, ${measuredLegs} of ${Math.max(0, stops.length - 1)} walks measured.`

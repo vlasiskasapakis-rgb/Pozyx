@@ -1093,7 +1093,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       if (i === 0) { pts.push(stops[0].at); continue; }
       const a = stops[i - 1], z = stops[i];
       let leg, len = 0, direct = false, measured = false;
-      if (a.legPts && a.legPts.length) {   // the walk recorded by Pozyx
+      if (Array.isArray(a.legPts)) {   // the walk recorded by Pozyx (no points: did not move)
         leg = [a.at, ...a.legPts.map(q => floorAt(P(q.x, q.y, 0))), z.at];
         measured = true;
       } else {
@@ -1112,7 +1112,9 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     routeStops = stops; routePts = pts;
     routeLen = legs.reduce((t, l) => t + l.len, 0);
     drawRoute();
-    return { stops: stops.map(s => ({ name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
+    const groupOf = new Map();
+    routeGroups.forEach((g, n) => g.idx.forEach(i => groupOf.set(i, g.idx)));
+    return { stops: stops.map((s, i) => ({ sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
   }
   function drawRoute() {
     const mat = new THREE.MeshBasicMaterial({ color: ROUTE_COLOR, transparent: true, opacity: 0.85, depthTest: false });
@@ -1141,20 +1143,44 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       const g = routeGroups.find(q => q.at.distanceTo(s.at) < 0.45);
       if (g) g.idx.push(i); else routeGroups.push({ at: s.at, idx: [i], poster: s.poster, name: s.name });
     });
+    // "1–7", "2 · 6", "1–3 · 5"
+    const nums = (idx) => {
+      const n = idx.map(i => i + 1), out = [];
+      for (let i = 0; i < n.length; i++) {
+        let j = i;
+        while (j + 1 < n.length && n[j + 1] === n[j] + 1) j++;
+        out.push(j - i >= 2 ? `${n[i]}–${n[j]}` : j > i ? `${n[i]} · ${n[j]}` : `${n[i]}`);
+        i = j;
+      }
+      return out.join(' · ');
+    };
     routeGroups.forEach((g) => {
       const first = g.idx[0] === 0;
       const disc = new THREE.Mesh(new THREE.CircleGeometry(0.26, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: first ? 0x2fbf71 : ROUTE_COLOR, depthTest: false }));
       disc.position.copy(lift(g.at));
       disc.renderOrder = 6;
-      const num = numberSprite(g.idx.map(i => i + 1).join(' · '), first ? '#2fbf71' : '#3567d6');
+      const num = numberSprite(nums(g.idx), first ? '#2fbf71' : '#3567d6');
       num.position.copy(g.at).setY(g.at.y + 0.45);
-      const look = new THREE.Line(new THREE.BufferGeometry().setFromPoints([lift(g.at).setY(g.at.y + 1.4), g.poster]), lineMat);
-      look.computeLineDistances();
-      routeGroup.add(disc, num, look);
+      routeGroup.add(disc, num);
+      // a dotted line from the spot to every poster looked at from there
+      const seenPosters = [];
+      for (const i of g.idx) {
+        const pp = routeStops[i].poster;
+        if (seenPosters.some(q => q.distanceTo(pp) < 0.05)) continue;
+        seenPosters.push(pp);
+        const look = new THREE.Line(new THREE.BufferGeometry().setFromPoints([lift(g.at).setY(g.at.y + 1.4), pp]), lineMat);
+        look.computeLineDistances();
+        routeGroup.add(look);
+      }
       const l = document.createElement('div');
       l.className = 'roomlabel routelabel';
-      const names = [...new Set(g.idx.map(i => routeStops[i].name))].join(' / ');
-      l.textContent = `${g.idx.map(i => i + 1).join(', ')} · ${names} · ` + g.idx.map(i => `${Math.round(routeStops[i].seconds || 0)} s`).join(' + ');
+      const names = [...new Set(g.idx.map(i => routeStops[i].name))];
+      const secs = g.idx.reduce((t, i) => t + (routeStops[i].seconds || 0), 0);
+      // several posters scanned from one spot: a short label, the full list on hover
+      l.textContent = names.length <= 2
+        ? `${nums(g.idx)} · ${names.join(' / ')} · ${Math.round(secs)} s`
+        : `${nums(g.idx)} · ${names.length} posters from here · ${Math.round(secs)} s`;
+      l.title = g.idx.map(i => `${i + 1}. ${routeStops[i].name} · ${Math.round(routeStops[i].seconds || 0)} s`).join('\n');
       container.appendChild(l);
       routeLabels.push(l);
     });
