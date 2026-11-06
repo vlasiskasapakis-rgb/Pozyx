@@ -1148,7 +1148,22 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
         routeGroup.add(arrow);
       }
     }
-    const lineMat = new THREE.LineDashedMaterial({ color: ROUTE_COLOR, dashSize: 0.08, gapSize: 0.06, depthTest: false });
+    // what was looked at: bold yellow dashes from the spot to each poster (thin tubes, since WebGL lines are 1 px)
+    const lookMat = new THREE.MeshBasicMaterial({ color: 0xffc400, depthTest: false });
+    const dashGeo = new THREE.CylinderGeometry(0.035, 0.035, 1, 8);
+    const lookLine = (a, b) => {
+      const d = b.clone().sub(a), len = d.length(), dir = d.normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      for (let t = 0; t < len; t += 0.26) {
+        const piece = Math.min(0.16, len - t);
+        const m = new THREE.Mesh(dashGeo, lookMat);
+        m.scale.set(1, piece, 1);
+        m.quaternion.copy(q);
+        m.position.copy(a).addScaledVector(dir, t + piece / 2);
+        m.renderOrder = 5;
+        routeGroup.add(m);
+      }
+    };
     // stops at (almost) the same spot, like a poster visited twice, share one marker: "1 · 6"
     routeGroups = [];
     routeStops.forEach((s, i) => {
@@ -1180,9 +1195,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
         const pp = routeStops[i].poster;
         if (seenPosters.some(q => q.distanceTo(pp) < 0.05)) continue;
         seenPosters.push(pp);
-        const look = new THREE.Line(new THREE.BufferGeometry().setFromPoints([lift(g.at).setY(g.at.y + 1.4), pp]), lineMat);
-        look.computeLineDistances();
-        routeGroup.add(look);
+        lookLine(lift(g.at).setY(g.at.y + 1.4), pp);
       }
       const l = document.createElement('div');
       l.className = 'roomlabel routelabel';
