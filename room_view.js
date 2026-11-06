@@ -1080,11 +1080,23 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       const box = partBox(it.name);
       if (!box && !it.pos) { missing.push(it.name); continue; }
       const est = box ? standingSpot(box) : null;
-      // where the visitor stood: measured by Pozyx when there is a recording, otherwise in front of the poster
-      const spot = it.pos ? floorAt(P(it.pos.x, it.pos.y, 0)) : est.spot;
+      // where the visitor stood: measured by Pozyx when there is a recording, otherwise in front of the poster.
+      // A Pozyx position is only used when it fits: within 4 m of the poster, with the poster in view
+      // (a tag that lost signal or had not settled can report a spot far away)
+      let pos = it.pos, rejected = '';
+      if (pos && est) {
+        const m = floorAt(P(pos.x, pos.y, 0)), eye = m.clone().setY(m.y + 1.4);
+        const far = Math.hypot(m.x - est.poster.x, m.z - est.poster.z);
+        const toPoster = est.poster.clone().sub(eye), len = toPoster.length();
+        const hidden = len > 0.3 && firstHit(eye, toPoster.normalize(), len - 0.25) !== null;
+        if (far > 4) rejected = `Pozyx put the phone ${far.toFixed(1)} m from it`;
+        else if (hidden) rejected = 'Pozyx put the phone where it cannot be seen';
+        if (rejected) pos = null;
+      }
+      const spot = pos ? floorAt(P(pos.x, pos.y, 0)) : est.spot;
       const k = navNearest(spot);
       const poster = est ? est.poster : spot.clone().setY(spot.y + 1.5);
-      stops.push({ ...it, poster, k, measured: !!it.pos, at: it.pos || k === null ? floorAt(new THREE.Vector3(spot.x, planFloorY, spot.z)) : navPoint(k) });
+      stops.push({ ...it, poster, k, measured: !!pos, rejected, at: pos || k === null ? floorAt(new THREE.Vector3(spot.x, planFloorY, spot.z)) : navPoint(k) });
     }
     // the walk, stop by stop
     const pts = [], legs = [];
@@ -1093,7 +1105,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       if (i === 0) { pts.push(stops[0].at); continue; }
       const a = stops[i - 1], z = stops[i];
       let leg, len = 0, direct = false, measured = false;
-      if (Array.isArray(a.legPts)) {   // the walk recorded by Pozyx (no points: did not move)
+      if (Array.isArray(a.legPts) && a.measured && z.measured) {   // the walk recorded by Pozyx (no points: did not move)
         leg = [a.at, ...a.legPts.map(q => floorAt(P(q.x, q.y, 0))), z.at];
         measured = true;
       } else {
@@ -1114,7 +1126,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     drawRoute();
     const groupOf = new Map();
     routeGroups.forEach((g, n) => g.idx.forEach(i => groupOf.set(i, g.idx)));
-    return { stops: stops.map((s, i) => ({ sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
+    return { stops: stops.map((s, i) => ({ rejected: s.rejected || '', sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
   }
   function drawRoute() {
     const mat = new THREE.MeshBasicMaterial({ color: ROUTE_COLOR, transparent: true, opacity: 0.85, depthTest: false });

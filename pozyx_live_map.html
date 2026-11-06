@@ -969,7 +969,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-06f';
+const CODE_VERSION = '2026-11-06g';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1746,10 +1746,13 @@ async function showRouteFromLooks() {
       (res.missing.length ? ` Not found in the model (left out): ${[...new Set(res.missing)].join(', ')}.` : '')
     : `None of the scanned posters were found in the model: ${[...new Set(res.missing)].join(', ')}. Name their materials or textures like the AR images.`;
   $('routeList').innerHTML = res.stops.length ? '<table>' + res.stops.map((x, i) =>
-    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s${x.sameSpotAs ? ` · same spot as ${x.sameSpotAs}` : ''}</span></td>` +
+    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s${x.sameSpotAs ? ` · same spot as ${x.sameSpotAs}` : ''}${x.rejected ? `<br><span style="color:var(--tap)">${esc(x.rejected)}: placed in front of it instead</span>` : ''}</span></td>` +
     `<td class="walk">${i < res.stops.length - 1 ? (x.walkMeasured ? `→ ${x.walk.toFixed(1)} m <b>measured</b>` : `→ ≈ ${x.walk.toFixed(1)} m${x.direct ? ' (straight line: no way round found)' : ' estimated'}`) : 'end'}</td></tr>`).join('') + '</table>' : '';
+  const usedStops = res.stops.filter(x => x.measured).length, rejectedStops = res.stops.filter(x => x.rejected).length;
+  const usedLegs = res.stops.filter(x => x.walkMeasured).length;
   if (res.stops.length && $('routePozyx').checked) $('routeInfo').textContent += measuredStops
-    ? ` Pozyx: ${measuredStops} of ${stops.length} stops placed where the visitor stood, ${measuredLegs} of ${Math.max(0, stops.length - 1)} walks measured.`
+    ? ` Pozyx: ${usedStops} of ${res.stops.length} stops placed where the visitor stood, ${usedLegs} of ${Math.max(0, res.stops.length - 1)} walks measured.` +
+      (rejectedStops ? ` ${rejectedStops} Pozyx position${rejectedStops === 1 ? '' : 's'} did not fit the poster (too far or out of view) and ${rejectedStops === 1 ? 'was' : 'were'} replaced by the estimate: the tag may have lost signal then. Play that part in Saved sessions to check.` : '')
     : ' No Pozyx recording covers these looks, so the walks are estimated.';
 }
 $('routeSession').addEventListener('change', () => { routePicked = $('routeSession').value; });

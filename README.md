@@ -218,7 +218,9 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    with meters counted only for moves over 25 cm (so standing still adds
    nothing). The list marks those as **measured** and the rest as estimated.
    A poster missing from the model still gets a stop when Pozyx has its
-   position. **▶ Play** walks a dot along the route and
+   position. A Pozyx position more than 4 m from its poster, or with the
+   poster out of view from there, is not used (the tag may have lost
+   signal); that stop is placed in front of the poster and marked. **▶ Play** walks a dot along the route and
    lights up each poster as it gets there. It is an estimate: it shows the
    order and the likely way, not where the visitor really walked.
 5. **Plan anchors (before installing)**: tick **Show anchor plan and
