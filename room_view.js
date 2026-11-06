@@ -227,8 +227,9 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     let key = `${state.look}|${state.showTrail}|${dynSig}|${state.dir ? state.dir.angle.toFixed(3) + ',' + state.dir.pitch.toFixed(3) : ''}`;
     for (const [id, t] of state.tags) if (t.pos) key += `|${id}:${t.pos.x},${t.pos.y},${t.trail.length}`;
     if (key !== lastStateKey) { lastStateKey = key; needsRender = true; }
-    if (needsRender) { updateDynamic(state); placePlanLabels(); }
-    if (model && updateGlow(state.lookImage, dt)) needsRender = true;
+    if (routePlay) { stepRoutePlay(dt); needsRender = true; }
+    if (needsRender) { updateDynamic(state); placePlanLabels(); placeRouteLabels(); }
+    if (model && updateGlow(routePlay ? routePlay.look : state.lookImage, dt)) needsRender = true;
     if (needsRender) {
       renderer.render(scene, camera);
       needsRender = false;
@@ -340,6 +341,8 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     }
     planMeshes = [];
     clearRooms();
+    clearRoute();
+    navGrid = null;
     const merged = mergeByMaterial(root);   // fewer, bigger parts draw much faster
     stats = { parts: merged.before, drawn: merged.group.children.length };
     root = merged.group;
@@ -905,6 +908,274 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     if (onCoverage) onCoverage({ ...count, total: cells.length, maxDistance: far, room: room ? room.name : null });
   }
 
+  /* ---------- route from looks (no Pozyx needed) ----------
+     The visitor's walk rebuilt from the posters they scanned, in order: each poster is found in the
+     model by its material/texture/object name (as for the glow), the visitor is placed on the floor
+     in front of it, and the walk between two posters goes around walls, partitions and cases
+     (a shortest path over a floor grid, checked with the same line-of-sight rays as the planner). */
+  const routeGroup = new THREE.Group();
+  scene.add(routeGroup);
+  const ROUTE_COLOR = 0x3567d6;
+  let routeLabels = [], routeStops = [], routePts = [], routeLen = 0, routePlay = null, navGrid = null;
+  function clearRoute() {
+    routeGroup.clear();
+    routeLabels.forEach(l => l.remove());
+    routeLabels = []; routeStops = []; routePts = []; routeLen = 0; routePlay = null;
+    needsRender = true;
+  }
+  // the smallest part of the model that uses the image's material (the poster, not a whole wall)
+  function partBox(name) {
+    const mats = new Set(entriesFor(name).map(e => e.mat));
+    if (!mats.size) return null;
+    let best = null;
+    model.updateMatrixWorld(true);
+    const v = new THREE.Vector3();
+    model.traverse((o) => {
+      if (!o.isMesh || !o.geometry.attributes.position) return;
+      const g = o.geometry, pos = g.attributes.position, idx = g.index, ranges = [];
+      if (Array.isArray(o.material)) { for (const gr of g.groups) if (mats.has(o.material[gr.materialIndex])) ranges.push([gr.start, gr.count]); }
+      else if (mats.has(o.material)) ranges.push([0, idx ? idx.count : pos.count]);
+      if (!ranges.length) return;
+      const box = new THREE.Box3();
+      for (const [start, count] of ranges) {
+        const end = Math.min(start + count, idx ? idx.count : pos.count);
+        for (let i = start; i < end; i++) box.expandByPoint(v.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(o.matrixWorld));
+      }
+      const sz = box.getSize(new THREE.Vector3()), area = sz.x * sz.y + sz.y * sz.z + sz.x * sz.z;
+      if (!box.isEmpty() && (!best || area < best.area)) best = { box, area };
+    });
+    return best && best.box;
+  }
+  // the floor grid for walking: a spot is walkable when the first surface below 1.8 m is the floor;
+  // a step to the next spot is free when nothing is in the way at knee (0.4 m) and chest (1.1 m) height
+  async function buildNav(progress) {
+    prepareRays();
+    const b = modelBox();
+    planFloorY = b.min.y;
+    const W = b.max.x - b.min.x, D = b.max.z - b.min.z;
+    const cell = Math.max(0.25, Math.sqrt(W * D / 40000));
+    const nx = Math.max(1, Math.ceil(W / cell)), nz = Math.max(1, Math.ceil(D / cell)), n = nx * nz;
+    const fy = new Float32Array(n).fill(NaN), o = new THREE.Vector3(), down = new THREE.Vector3(0, -1, 0);
+    let t0 = performance.now();
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < nz; j++) {
+        o.set(b.min.x + (i + 0.5) * cell, planFloorY + 1.8, b.min.z + (j + 0.5) * cell);
+        const d = firstHit(o, down, 2.3);
+        if (d !== null && o.y - d - planFloorY < 0.35) fy[i * nz + j] = o.y - d;
+      }
+      if (performance.now() - t0 > 25) { if (progress) progress(Math.round(i / nx * 100)); await new Promise(r => setTimeout(r)); t0 = performance.now(); }
+    }
+    navGrid = { b, cell, nx, nz, fy, edges: new Map() };
+  }
+  const NB = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  function clearBetween(p, q) {   // nothing in the way between two floor points, at knee and chest height
+    const d = new THREE.Vector3(q.x - p.x, 0, q.z - p.z), len = d.length();
+    if (len < 1e-6) return true;
+    d.divideScalar(len);
+    for (const h of [0.4, 1.1]) if (firstHit(new THREE.Vector3(p.x, p.y + h, p.z), d, len) !== null) return false;
+    return true;
+  }
+  function navPoint(k) {
+    const { b, cell, nz, fy } = navGrid, i = Math.floor(k / nz), j = k % nz;
+    return new THREE.Vector3(b.min.x + (i + 0.5) * cell, fy[k], b.min.z + (j + 0.5) * cell);
+  }
+  function navOpen(k, m) {
+    const key = k < m ? k * 1e7 + m : m * 1e7 + k, { edges } = navGrid;
+    if (!edges.has(key)) edges.set(key, clearBetween(navPoint(k), navPoint(m)));
+    return edges.get(key);
+  }
+  function navNeighbours(k) {
+    const { nx, nz, fy } = navGrid, i = Math.floor(k / nz), j = k % nz, out = [];
+    for (const [di, dj] of NB) {
+      const a = i + di, c = j + dj;
+      if (a < 0 || c < 0 || a >= nx || c >= nz) continue;
+      const m = a * nz + c;
+      if (Number.isNaN(fy[m])) continue;
+      if (di && dj && (Number.isNaN(fy[a * nz + j]) || Number.isNaN(fy[i * nz + c]))) continue;
+      out.push([m, di && dj ? Math.SQRT2 : 1]);
+    }
+    return out;
+  }
+  // the walkable spot nearest to a point, with room to move (not a spot inside a wall)
+  function navNearest(p) {
+    const { b, cell, nx, nz, fy } = navGrid;
+    const i0 = Math.floor((p.x - b.min.x) / cell), j0 = Math.floor((p.z - b.min.z) / cell);
+    for (let r = 0; r < 12; r++) {
+      let best = null, bd = Infinity;
+      for (let i = i0 - r; i <= i0 + r; i++) for (let j = j0 - r; j <= j0 + r; j++) {
+        if (i < 0 || j < 0 || i >= nx || j >= nz || (Math.abs(i - i0) !== r && Math.abs(j - j0) !== r)) continue;
+        const k = i * nz + j;
+        if (Number.isNaN(fy[k])) continue;
+        if (navNeighbours(k).filter(([m]) => navOpen(k, m)).length < 3) continue;
+        const q = navPoint(k), d = (q.x - p.x) ** 2 + (q.z - p.z) ** 2;
+        if (d < bd) { bd = d; best = k; }
+      }
+      if (best !== null) return best;
+    }
+    return null;
+  }
+  async function navPath(a, z) {   // A* from spot a to spot z; null when there is no way through
+    const { nz } = navGrid, goal = navPoint(z);
+    const h = (k) => { const q = navPoint(k); return Math.hypot(q.x - goal.x, q.z - goal.z) / navGrid.cell; };
+    const g = new Map([[a, 0]]), from = new Map(), heap = [[h(a), a]], done = new Set();
+    const push = (e) => { heap.push(e); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+    let t0 = performance.now(), steps = 0;
+    while (heap.length) {
+      const [, k] = pop();
+      if (k === z) { const path = [k]; let c = k; while (from.has(c)) { c = from.get(c); path.push(c); } return path.reverse().map(navPoint); }
+      if (done.has(k)) continue;
+      done.add(k);
+      if (++steps > 200000) break;
+      for (const [m, cost] of navNeighbours(k)) {
+        if (done.has(m) || !navOpen(k, m)) continue;
+        const ng = g.get(k) + cost;
+        if (ng < (g.has(m) ? g.get(m) : Infinity)) { g.set(m, ng); from.set(m, k); push([ng + h(m), m]); }
+      }
+      if (performance.now() - t0 > 25) { await new Promise(r => setTimeout(r)); t0 = performance.now(); }
+    }
+    return null;
+  }
+  function smooth(pts) {   // straighten the grid steps: go straight wherever nothing is in the way
+    if (pts.length < 3) return pts;
+    const out = [pts[0]];
+    let i = 0;
+    while (i < pts.length - 1) {
+      let j = pts.length - 1;
+      while (j > i + 1 && !clearBetween(pts[i], pts[j])) j--;
+      out.push(pts[j]);
+      i = j;
+    }
+    return out;
+  }
+  // where the visitor stood: on the open side of the poster, about a meter out
+  function standingSpot(box) {
+    const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
+    const flat = Math.min(s.x, s.z) < 0.25 * Math.max(s.x, s.z, 0.01);
+    const dirs = flat ? (s.x < s.z ? [[1, 0], [-1, 0]] : [[0, 1], [0, -1]])
+      : [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+    const y = Math.min(Math.max(c.y, planFloorY + 0.8), planFloorY + 2.2);
+    let best = null;
+    for (const [dx, dz] of dirs) {
+      const d = new THREE.Vector3(dx, 0, dz).normalize();
+      const half = Math.abs(d.x) * s.x / 2 + Math.abs(d.z) * s.z / 2;
+      const o = new THREE.Vector3(c.x, y, c.z).addScaledVector(d, half + 0.05);
+      const hit = firstHit(o, d, 10), room = hit === null ? 10 : hit;
+      if (!best || room > best.room) best = { d, o, room };
+    }
+    const p = best.o.clone().addScaledVector(best.d, Math.max(0.3, Math.min(1.2, best.room - 0.4)));
+    return { spot: p, poster: c };
+  }
+  // list: [{name, seconds, label}] in visiting order. Returns what was found.
+  async function showRoute(list, progress) {
+    clearRoute();
+    if (!model) return null;
+    if (!navGrid) await buildNav(p => progress && progress(`Reading the floor of the model… ${p}%`));
+    const stops = [], missing = [];
+    for (const it of list) {
+      const box = partBox(it.name);
+      if (!box) { missing.push(it.name); continue; }
+      const { spot, poster } = standingSpot(box);
+      const k = navNearest(spot);
+      stops.push({ ...it, poster, k, at: k === null ? new THREE.Vector3(spot.x, planFloorY, spot.z) : navPoint(k) });
+    }
+    // the walk, stop by stop
+    const pts = [], legs = [];
+    for (let i = 0; i < stops.length; i++) {
+      if (progress) progress(`Working out the walk… ${i + 1} of ${stops.length}`);
+      if (i === 0) { pts.push(stops[0].at); continue; }
+      const a = stops[i - 1], z = stops[i];
+      let leg = a.k !== null && z.k !== null && a.k !== z.k ? await navPath(a.k, z.k) : null;
+      const direct = !leg;
+      leg = direct ? [a.at, z.at] : smooth(leg);
+      let len = 0;
+      for (let q = 1; q < leg.length; q++) len += leg[q].distanceTo(leg[q - 1]);
+      legs.push({ len, direct });
+      a.walk = len; a.direct = direct;
+      for (let q = 1; q < leg.length; q++) pts.push(leg[q]);
+      z.ptIndex = pts.length - 1;
+    }
+    if (stops.length) stops[0].ptIndex = 0;
+    routeStops = stops; routePts = pts;
+    routeLen = legs.reduce((t, l) => t + l.len, 0);
+    drawRoute();
+    return { stops: stops.map(s => ({ name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct })), missing, total: routeLen };
+  }
+  function drawRoute() {
+    const mat = new THREE.MeshBasicMaterial({ color: ROUTE_COLOR, transparent: true, opacity: 0.85, depthTest: false });
+    const lift = (p) => new THREE.Vector3(p.x, p.y + 0.06, p.z);
+    for (let i = 1; i < routePts.length; i++) {
+      const a = lift(routePts[i - 1]), b = lift(routePts[i]), len = a.distanceTo(b);
+      if (len < 1e-3) continue;
+      const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, len, 8), mat);
+      tube.position.copy(a).add(b).multiplyScalar(0.5);
+      tube.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+      tube.renderOrder = 5;
+      routeGroup.add(tube);
+      // arrows every 1.5 m show the walking direction
+      for (let t = 0.75; t < len; t += 1.5) {
+        const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.26, 12), mat);
+        arrow.position.copy(a).lerp(b, t / len);
+        arrow.quaternion.copy(tube.quaternion);
+        arrow.renderOrder = 5;
+        routeGroup.add(arrow);
+      }
+    }
+    const lineMat = new THREE.LineDashedMaterial({ color: ROUTE_COLOR, dashSize: 0.08, gapSize: 0.06, depthTest: false });
+    routeStops.forEach((s, i) => {
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.26, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: i === 0 ? 0x2fbf71 : ROUTE_COLOR, depthTest: false }));
+      disc.position.copy(lift(s.at));
+      disc.renderOrder = 6;
+      const look = new THREE.Line(new THREE.BufferGeometry().setFromPoints([lift(s.at).setY(s.at.y + 1.4), s.poster]), lineMat);
+      look.computeLineDistances();
+      routeGroup.add(disc, look);
+      const l = document.createElement('div');
+      l.className = 'roomlabel routelabel';
+      l.textContent = `${i + 1} · ${s.name}${s.seconds ? ` · ${Math.round(s.seconds)} s` : ''}`;
+      container.appendChild(l);
+      routeLabels.push(l);
+    });
+    routeDot = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 14), new THREE.MeshBasicMaterial({ color: 0xe8812a, depthTest: false }));
+    routeDot.renderOrder = 7;
+    routeDot.visible = false;
+    routeGroup.add(routeDot);
+    needsRender = true;
+  }
+  let routeDot = null;
+  function placeRouteLabels() {
+    routeStops.forEach((s, i) => {
+      const l = routeLabels[i];
+      if (!l) return;
+      const v = new THREE.Vector3(s.at.x, s.at.y + 0.5, s.at.z).project(camera);
+      l.hidden = v.z > 1;
+      l.style.left = ((v.x + 1) / 2 * container.clientWidth) + 'px';
+      l.style.top = ((1 - v.y) / 2 * container.clientHeight) + 'px';
+      l.classList.toggle('now', !!routePlay && routePlay.stop === i);
+    });
+  }
+  // a dot walks the route (2 m/s), stopping at each poster while it lights up
+  function playRoute(on) {
+    if (!routeDot || routePts.length < 1) return false;
+    routePlay = on ? { d: 0, wait: 1.2, stop: 0, look: routeStops[0] ? routeStops[0].name : '' } : null;
+    routeDot.visible = !!on;
+    if (on) routeDot.position.copy(routePts[0]).setY(routePts[0].y + 0.25);
+    needsRender = true;
+    return !!on;
+  }
+  function stepRoutePlay(dt) {
+    const p = routePlay;
+    if (p.wait > 0) { p.wait -= dt; if (p.wait <= 0) p.look = ''; return; }
+    p.d += dt * 2;
+    let left = p.d, i = 1;
+    for (; i < routePts.length; i++) { const L = routePts[i].distanceTo(routePts[i - 1]); if (left <= L) break; left -= L; }
+    if (i >= routePts.length) { p.d = 0; p.stop = 0; p.wait = 1.2; p.look = routeStops[0].name; routeDot.position.copy(routePts[0]).setY(routePts[0].y + 0.25); return; }
+    const a = routePts[i - 1], b = routePts[i], L = a.distanceTo(b) || 1;
+    routeDot.position.copy(a).lerp(b, left / L).setY(a.y + (b.y - a.y) * left / L + 0.25);
+    // arrived at the next stop?
+    const next = routeStops.findIndex((s, k) => k > p.stop && s.ptIndex !== undefined && s.ptIndex <= i - 1);
+    if (next > p.stop) { p.stop = next; p.wait = Math.min(3, 0.8 + (routeStops[next].seconds || 0) / 10); p.look = routeStops[next].name; routeDot.position.copy(routePts[routeStops[next].ptIndex]).setY(routePts[routeStops[next].ptIndex].y + 0.25); p.d = 0; for (let q = 1; q <= routeStops[next].ptIndex; q++) p.d += routePts[q].distanceTo(routePts[q - 1]); }
+  }
+
   // Two-point alignment: the caller asks for a click on the model; the point comes back in the
   // model's own coordinates (before alignment)
   const ray = new THREE.Raycaster();
@@ -960,6 +1231,8 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     get model() { return model; },
     get stats() { return stats; },
     suggestPlan, setPlan, showPlan, movePlanAnchor, pickPlanCentre, findRooms, selectRoom,
+    showRoute, clearRoute, playRoute,
+    get routePlaying() { return !!routePlay; },
     get roomId() { return roomId; },
     roomAt(p) { const r = roomAt(p); return r ? r.id : null; },
     set onRoomClick(fn) { onRoomClick = fn; },

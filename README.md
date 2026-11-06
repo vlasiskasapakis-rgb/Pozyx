@@ -198,7 +198,21 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    `MIRO_A20`; case, extensions and spaces/dashes do not matter). The Room
    model panel lists which AR images were found, and "Names in the model"
    shows the model's texture and material names to compare.
-4. **Plan anchors (before installing)**: tick **Show anchor plan and
+4. **Route from looks (no Pozyx needed)**: rebuilds a visitor's walk only
+   from the posters they scanned in the AR viewer. Choose the session (or
+   "Looks without a session" for the last 24 hours) and click **Show route**.
+   Each scanned poster is found in the model by its name, as for the glow
+   (material, texture or object name, e.g. `MIRO_A2_MAT`); the visitor is put
+   on the floor about a meter in front of it, on its open side, and the walk
+   from one poster to the next goes around walls, partitions and cases (the
+   shortest way over the floor of the model). The model shows numbered stops
+   with how long each poster was looked at, and the panel lists the stops,
+   the meters walked between them and posters not found in the model.
+   Looks of the same poster less than 15 s apart count as one stop; glances
+   under a second are left out. **▶ Play** walks a dot along the route and
+   lights up each poster as it gets there. It is an estimate: it shows the
+   order and the likely way, not where the visitor really walked.
+5. **Plan anchors (before installing)**: tick **Show anchor plan and
    coverage**. The page first reads the rooms of the model: spaces closed off
    by walls (and the wall above a door) at 2.2 m become Room 1, Room 2, …
    (biggest first). Lower partitions and display cases do not split a room;

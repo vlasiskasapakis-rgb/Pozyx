@@ -55,6 +55,11 @@
   .roomview { position: relative; width: 100%; height: 72vh; min-height: 360px; border-radius: 8px; overflow: hidden; }
   .roomview canvas { display: block; }
   .planlabel { border-color: #e8812a; color: #b85d10; }
+  .routelabel { border-color: #3567d6; color: #2a52ad; }
+  .routelabel.now { background: #3567d6; color: #fff; }
+  #routeList table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  #routeList td { padding: 4px 6px 4px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  #routeList td.walk { color: var(--muted); font-size: 12px; }
   .roomtag { pointer-events: auto; cursor: pointer; transform: translate(-50%, -50%); border-width: 2px; font-weight: 500; }
   .roomtag.chosen { font-weight: 700; }
   .planrow { display: grid; grid-template-columns: 2.5em 1fr auto; gap: 8px; align-items: center; font-size: 13px; margin-top: 6px; }
@@ -214,6 +219,21 @@
       <details id="roomNames" class="hint" hidden>
         <summary>Names in the model</summary>
         <div id="roomNamesList" style="max-height:220px; overflow:auto; margin-top:6px; white-space:normal"></div>
+      </details>
+      <details class="sect" data-fold="route">
+      <summary>Route from looks (no Pozyx needed)</summary>
+      <p class="hint" style="margin-top:0">Rebuilds the visitor's walk from the posters they scanned in the AR viewer, in order: each poster is found in the room model by its name, and the walk between them goes around walls and cases.</p>
+      <div class="row" style="align-items:center; gap:6px; font-size:13px">
+        <label style="display:flex; align-items:center; gap:6px; flex:1; min-width:0">Session
+          <select id="routeSession" style="flex:1; min-width:0"></select></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="routeShow" class="primary">Show route</button>
+        <button id="routePlay" disabled>▶ Play</button>
+        <button id="routeHide" disabled>Hide</button>
+      </div>
+      <p class="hint" id="routeInfo"></p>
+      <div id="routeList"></div>
       </details>
       <details class="sect" data-fold="plan">
       <summary>Plan anchors (before installing)</summary>
@@ -677,6 +697,7 @@ function renderSessions() {
   if (!dbSessions.some(x => x.id === sessionId)) sessionId = '';
   sel.value = sessionId;
   sel.disabled = $('btnNewSession').disabled = rec.on;   // a recording keeps the session it started with
+  try { fillRouteSessions(); } catch (e) { /* page still starting */ }
 }
 function pickSession(id) {
   sessionId = id;
@@ -947,7 +968,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-03c';
+const CODE_VERSION = '2026-11-06a';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1608,6 +1629,61 @@ function compassFromReadings() {
   return `Saved: A1 → A2 points to ${Math.round(fit.x)}°` + (fit.rev ? ', turning the other way. This means the Pozyx y axis is mirrored (anchor A3 is to the right of A1 → A2 seen from above), so the top view is mirrored too' : '') +
     `. The two readings agree within ${Math.round(fit.err)}°` + (fit.err > 25 ? ': that is a lot, metal nearby may disturb the compass; try again away from it.' : '.');
 }
+
+/* ---------- route from looks (room_view.js draws it) ---------- */
+// The visitor's walk rebuilt only from the posters scanned in the AR viewer (table looks), so it
+// works without any Pozyx recording.
+let routePicked = '';   // the session chosen in the list; otherwise the current one
+function fillRouteSessions() {
+  const sel = $('routeSession'), keep = routePicked;
+  const cur = (replay.active && replay.data.meta && replay.data.meta.sessionId) || sessionId;
+  sel.innerHTML = dbSessions.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('') +
+    '<option value="-">Looks without a session (last 24 h)</option>';
+  sel.value = keep && [...sel.options].some(o => o.value === keep) ? keep : (cur || (dbSessions[0] && dbSessions[0].id) || '-');
+}
+// Looks in time order; the same poster looked at again within 15 s counts as one stop, and glances
+// under a second are left out
+function routeStopsFrom(rows) {
+  const stops = [];
+  for (const r of rows) {
+    const a = +r.start_unix_ms, b = +r.end_unix_ms, name = r.target_name || '';
+    if (!name || !(b > a)) continue;
+    const last = stops[stops.length - 1];
+    if (last && last.name === name && a - last.end < 15000) { last.end = Math.max(last.end, b); last.seconds += (b - a) / 1000; continue; }
+    stops.push({ name, start: a, end: b, seconds: (b - a) / 1000, mode: r.mode || '' });
+  }
+  return stops.filter(x => x.seconds >= 1);
+}
+async function showRouteFromLooks() {
+  if (!room || !room.hasModel) { $('routeInfo').textContent = 'Load a room model first (Upload GLB or FBX folder).'; return; }
+  const id = $('routeSession').value;
+  $('routeInfo').textContent = 'Loading the looks…';
+  let rows;
+  try {
+    rows = await pozyxDb.request(id === '-'
+      ? `looks?select=target_name,start_unix_ms,end_unix_ms,mode&session_id=is.null&start_unix_ms=gte.${Date.now() - 86400000}&order=start_unix_ms.asc`
+      : `looks?select=target_name,start_unix_ms,end_unix_ms,mode&session_id=eq.${encodeURIComponent(id)}&order=start_unix_ms.asc`);
+  } catch (e) { $('routeInfo').textContent = `Could not load the looks: ${e.message}`; return; }
+  const stops = routeStopsFrom(rows);
+  if (!stops.length) { $('routeInfo').textContent = 'No looks in this session (looks under a second are left out).'; $('routeList').innerHTML = ''; return; }
+  const res = await room.showRoute(stops.map(x => ({ name: x.name, seconds: x.seconds, label: clockTime(x.start).slice(0, 8) })),
+    (msg) => { $('routeInfo').textContent = msg; });
+  if (!res) return;
+  $('routePlay').disabled = $('routeHide').disabled = !res.stops.length;
+  $('routePlay').textContent = '▶ Play';
+  const mins = (stops[stops.length - 1].end - stops[0].start) / 60000;
+  $('routeInfo').textContent = res.stops.length
+    ? `${res.stops.length} stop${res.stops.length === 1 ? '' : 's'}, about ${res.total.toFixed(0)} m of walking in ${mins < 1 ? '<1' : Math.round(mins)} min.` +
+      (res.missing.length ? ` Not found in the model (left out): ${[...new Set(res.missing)].join(', ')}.` : '')
+    : `None of the scanned posters were found in the model: ${[...new Set(res.missing)].join(', ')}. Name their materials or textures like the AR images.`;
+  $('routeList').innerHTML = res.stops.length ? '<table>' + res.stops.map((x, i) =>
+    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s</span></td>` +
+    `<td class="walk">${i < res.stops.length - 1 ? `→ ${x.walk.toFixed(1)} m${x.direct ? ' (straight line: no way round found)' : ''}` : 'end'}</td></tr>`).join('') + '</table>' : '';
+}
+$('routeSession').addEventListener('change', () => { routePicked = $('routeSession').value; });
+$('routeShow').onclick = () => { fillRouteSessions(); showRouteFromLooks(); };
+$('routePlay').onclick = () => { if (!room) return; const on = room.playRoute(!room.routePlaying); $('routePlay').textContent = on ? '■ Stop' : '▶ Play'; };
+$('routeHide').onclick = () => { if (!room) return; room.clearRoute(); $('routeList').innerHTML = ''; $('routeInfo').textContent = ''; $('routePlay').disabled = $('routeHide').disabled = true; $('routePlay').textContent = '▶ Play'; };
 
 /* ---------- anchor planning (room_view.js draws it) ---------- */
 // Proposed anchors on the room model, with a floor map of how many of them can be seen; kept per
