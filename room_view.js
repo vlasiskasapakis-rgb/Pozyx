@@ -920,7 +920,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   function clearRoute() {
     routeGroup.clear();
     routeLabels.forEach(l => l.remove());
-    routeLabels = []; routeStops = []; routeGroups = []; routePts = []; routeLen = 0; routePlay = null;
+    routeLabels = []; routeStops = []; routeGroups = []; stopDashGroups = []; routePts = []; routeLen = 0; routePlay = null;
     needsRender = true;
   }
   // the smallest part of the model that uses the image's material (the poster, not a whole wall)
@@ -1159,22 +1159,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
         routeGroup.add(arrow);
       }
     }
-    // what was looked at: bold yellow dashes from the spot to each poster (thin tubes, since WebGL lines are 1 px)
-    const lookMat = new THREE.MeshBasicMaterial({ color: 0xffc400, depthTest: false });
-    const dashGeo = new THREE.CylinderGeometry(0.035, 0.035, 1, 8);
-    const lookLine = (a, b) => {
-      const d = b.clone().sub(a), len = d.length(), dir = d.normalize();
-      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      for (let t = 0; t < len; t += 0.26) {
-        const piece = Math.min(0.16, len - t);
-        const m = new THREE.Mesh(dashGeo, lookMat);
-        m.scale.set(1, piece, 1);
-        m.quaternion.copy(q);
-        m.position.copy(a).addScaledVector(dir, t + piece / 2);
-        m.renderOrder = 5;
-        routeGroup.add(m);
-      }
-    };
+    const lookLine = (a, b) => lookDashes(a, b, routeGroup);
     // stops at (almost) the same spot, like a poster visited twice, share one marker: "1 · 6"
     routeGroups = [];
     routeStops.forEach((s, i) => {
@@ -1206,7 +1191,13 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
         const pp = routeStops[i].poster;
         if (seenPosters.some(q => q.distanceTo(pp) < 0.05)) continue;
         seenPosters.push(pp);
-        lookLine(lift(g.at).setY(g.at.y + 1.4), pp);
+        // a painting with phones at its looks gets its lines from those phones instead (see drawLookPhones)
+        const hasPhones = (routeStops[i].looks || []).some(lk => lookPhoneSpot(routeStops[i], lk));
+        const dashes = new THREE.Group();
+        dashes.userData.stopDashes = hasPhones;
+        lookDashes(lift(g.at).setY(g.at.y + 1.4), pp, dashes);
+        routeGroup.add(dashes);
+        if (hasPhones) stopDashGroups.push(dashes);
       }
       const l = document.createElement('div');
       l.className = 'roomlabel routelabel';
@@ -1221,11 +1212,29 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       routeLabels.push(l);
     });
     drawLookPhones();
+    for (const g of stopDashGroups) g.visible = !showLookPhones;
     routeDot = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 14), new THREE.MeshBasicMaterial({ color: 0xe8812a, depthTest: false }));
     routeDot.renderOrder = 7;
     routeDot.visible = false;
     routeGroup.add(routeDot);
     needsRender = true;
+  }
+  // what was looked at: yellow dashes to the painting (thin tubes, since WebGL lines are 1 px)
+  let lookMat = null, dashGeo = null;
+  function lookDashes(a, b, parent) {
+    lookMat ||= new THREE.MeshBasicMaterial({ color: 0xffc400, depthTest: false });
+    dashGeo ||= new THREE.CylinderGeometry(0.018, 0.018, 1, 6);
+    const d = b.clone().sub(a), len = d.length(), dir = d.normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    for (let t = 0; t < len; t += 0.2) {
+      const piece = Math.min(0.12, len - t);
+      const m = new THREE.Mesh(dashGeo, lookMat);
+      m.scale.set(1, piece, 1);
+      m.quaternion.copy(q);
+      m.position.copy(a).addScaledVector(dir, t + piece / 2);
+      m.renderOrder = 5;
+      parent.add(m);
+    }
   }
   let routeDot = null, showLookPhones = true, lookPhoneGroup = null, lookPhoneCount = 0;
   // Where the phone was during each single look, from the camera: the measured distance and the
@@ -1259,9 +1268,8 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
         const dot = new THREE.Mesh(dotGeo, dotMat);
         dot.position.copy(floor).setY(floor.y + 0.03);
         dot.renderOrder = 6;
-        lookPhoneGroup.add(phone, dot,
-          new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, s.poster]), lineMat),
-          new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, floor]), lineMat));
+        lookPhoneGroup.add(phone, dot, new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, floor]), lineMat));
+        lookDashes(p, s.poster, lookPhoneGroup);   // the yellow look line starts at the phone
       }
     });
   }
@@ -1280,7 +1288,13 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     phoneIcon = new THREE.SpriteMaterial({ map: t, depthTest: false, sizeAttenuation: false });
     return phoneIcon;
   }
-  function setLookPhones(on) { showLookPhones = !!on; if (lookPhoneGroup) lookPhoneGroup.visible = showLookPhones; needsRender = true; }
+  let stopDashGroups = [];   // stop-to-painting lines that the phones replace while they are shown
+  function setLookPhones(on) {
+    showLookPhones = !!on;
+    if (lookPhoneGroup) lookPhoneGroup.visible = showLookPhones;
+    for (const g of stopDashGroups) g.visible = !showLookPhones;
+    needsRender = true;
+  }
   // a round number badge that always faces the camera and is drawn on top
   function numberSprite(text, color) {
     text = String(text);
