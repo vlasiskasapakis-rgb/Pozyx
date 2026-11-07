@@ -111,6 +111,19 @@
   .props input[type=color] { width: 44px; height: 32px; border: 1px solid var(--border); border-radius: 6px; background: none; padding: 2px; }
   #preview { width: 100%; height: 300px; border-radius: 8px; overflow: hidden; background: var(--grid); }
   #preview canvas { display: block; }
+  /* painting sizes */
+  #sizesDialog { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); padding: 0; width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+  #sizesDialog::backdrop { background: rgba(0, 0, 0, .35); }
+  #sizesDialog .head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 1; }
+  #sizesDialog .head h2 { margin: 0; flex: 1; }
+  #sizesDialog .body { padding: 8px 16px 16px; }
+  .sizes { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .sizes th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  .sizes td { padding: 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .sizes img { width: 44px; height: 44px; object-fit: contain; background: var(--grid); border-radius: 4px; display: block; }
+  .sizes input { font: inherit; width: 90px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  .sizes .ok { color: var(--muted); font-size: 12px; }
+  .sizes tr.missing td:nth-child(2) b::after { content: ' · no size yet'; color: #c2410c; font-weight: 400; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -119,6 +132,7 @@
   <button id="btnUpload" class="primary">Upload images</button>
   <button id="btnPublish">Publish to phone</button>
   <span id="pubState" class="chip">–</span>
+  <button id="btnSizes" title="The real size of each painting as it hangs, so the phone can tell how far away it is">Painting sizes</button>
   <a class="btn" href="ar_viewer.html" target="_blank">Open AR viewer</a>
   <div id="status" class="status">Loading…</div>
 </header>
@@ -165,6 +179,20 @@
   </aside>
 </main>
 
+<dialog id="sizesDialog">
+  <div class="head">
+    <h2>Painting sizes</h2>
+    <span id="sizesState" class="hint"></span>
+    <button id="sizesClose">Close</button>
+  </div>
+  <div class="body">
+    <p class="hint">The real size of each painting as it hangs (the printed image, without the frame), in centimetres. The AR viewer uses the width to show how far the phone is from the painting. Leave the height empty to work it out from the picture's shape. Saved automatically; Enter moves to the next painting.</p>
+    <table class="sizes">
+      <thead><tr><th></th><th>Image</th><th>Width (cm)</th><th>Height (cm)</th><th></th></tr></thead>
+      <tbody id="sizesRows"></tbody>
+    </table>
+  </div>
+</dialog>
 <input type="file" id="fileTargets" accept="image/*" multiple hidden>
 <input type="file" id="fileImage" accept="image/*" hidden>
 <input type="file" id="fileModel" accept=".glb,.gltf" hidden>
@@ -208,6 +236,81 @@ function loadImg(src, cors) {
   });
 }
 
+/* ---------- painting sizes ----------
+   The real size of each painting, saved on its image row (ar_targets.width_m / height_m) */
+let sizes = {};
+const sizeTimers = new Map();
+function loadSizes() {
+  sizes = {};
+  for (const t of targets) if (t.width_m || t.height_m) sizes[t.id] = { width_m: t.width_m ? +t.width_m : undefined, height_m: t.height_m ? +t.height_m : undefined };
+}
+function aspect(t) { return t.width_px && t.height_px ? t.height_px / t.width_px : 1; }
+function renderSizes() {
+  $('sizesRows').innerHTML = targets.map(t => {
+    const sz = sizes[t.id] || {}, w = sz.width_m ? +(sz.width_m * 100).toFixed(1) : '', h = sz.height_m ? +(sz.height_m * 100).toFixed(1) : '';
+    const autoH = w ? (w * aspect(t)).toFixed(1) : '';
+    return `<tr data-id="${esc(t.id)}" class="${w ? '' : 'missing'}">
+      <td><img src="${esc(db.fileUrl(t.image_path))}" alt="" loading="lazy"></td>
+      <td><b>${esc(t.name)}</b></td>
+      <td><input type="number" min="1" max="2000" step="0.1" data-k="w" value="${w}" placeholder="e.g. 60" aria-label="Width of ${esc(t.name)} in cm"></td>
+      <td><input type="number" min="1" max="2000" step="0.1" data-k="h" value="${h}" placeholder="${autoH || 'auto'}" aria-label="Height of ${esc(t.name)} in cm"></td>
+      <td class="ok">${w ? `${(w / 100).toFixed(2)} × ${((h || autoH) / 100).toFixed(2)} m` : ''}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="hint">Upload images first.</td></tr>';
+  const n = targets.filter(t => sizes[t.id] && sizes[t.id].width_m).length;
+  $('sizesState').textContent = `${n} of ${targets.length} sized`;
+}
+function updateSizeRow(row) {
+  const t = targets.find(x => x.id === row.dataset.id), sz = sizes[row.dataset.id] || {};
+  const w = sz.width_m ? sz.width_m * 100 : 0, autoH = w ? (w * aspect(t)).toFixed(1) : '';
+  row.classList.toggle('missing', !w);
+  row.querySelector('input[data-k="h"]').placeholder = autoH || 'auto';
+  row.querySelector('.ok').textContent = w ? `${(w / 100).toFixed(2)} × ${((sz.height_m ? sz.height_m * 100 : +autoH) / 100).toFixed(2)} m` : '';
+}
+function saveSizeSoon(id) {
+  clearTimeout(sizeTimers.get(id));
+  $('sizesState').textContent = 'Saving…';
+  sizeTimers.set(id, setTimeout(async () => {
+    const sz = sizes[id] || {}, body = { width_m: sz.width_m || null, height_m: sz.height_m || null };
+    try {
+      await db.request(`ar_targets?id=eq.${encodeURIComponent(id)}`, { method: 'PATCH', body, prefer: 'return=minimal' });
+      const t = targets.find(x => x.id === id);
+      if (t) Object.assign(t, body);
+      const n = targets.filter(t => sizes[t.id] && sizes[t.id].width_m).length;
+      $('sizesState').textContent = `Saved · ${n} of ${targets.length} sized`;
+    } catch (e) {
+      $('sizesState').textContent = /width_m|height_m/.test(e.message)
+        ? 'Could not save: run the updated supabase/schema.sql in Supabase first (it adds the size columns).'
+        : `Could not save: ${e.message}`;
+    }
+  }, 500));
+}
+$('btnSizes').onclick = () => { renderSizes(); $('sizesDialog').showModal(); };
+$('sizesClose').onclick = () => $('sizesDialog').close();
+$('sizesRows').addEventListener('change', (e) => {
+  const inp = e.target.closest('input'), row = e.target.closest('tr[data-id]');
+  if (!inp || !row) return;
+  const id = row.dataset.id, cur = { ...(sizes[id] || {}) };
+  const v = parseFloat(inp.value);
+  const m = Number.isFinite(v) && v > 0 ? v / 100 : null;
+  if (inp.dataset.k === 'w') cur.width_m = m; else cur.height_m = m;
+  if (!cur.width_m) delete cur.width_m;
+  if (!cur.height_m) delete cur.height_m;
+  if (cur.width_m || cur.height_m) sizes[id] = cur; else delete sizes[id];
+  updateSizeRow(row);   // only this row, so typing and Enter keep their place
+  saveSizeSoon(id);
+});
+$('sizesRows').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const inp = e.target.closest('input'), row = e.target.closest('tr');
+  if (!inp || !row) return;
+  e.preventDefault();
+  const k = inp.dataset.k;   // Enter: save and go to the next painting's same field
+  inp.dispatchEvent(new Event('change', { bubbles: true }));
+  const rows = [...$('sizesRows').querySelectorAll('tr')], i = rows.findIndex(r => r.dataset.id === row.dataset.id);
+  const next = rows[i + 1] && rows[i + 1].querySelector(`input[data-k="${k}"]`);
+  if (next) next.focus();
+});
+
 /* ---------- loading ---------- */
 async function loadAll() {
   if (!db || !db.configured()) { setStatus('No database set in pozyx_db.js.', true); return; }
@@ -225,6 +328,7 @@ async function loadAll() {
     return;
   }
   setStatus(targets.length ? `${targets.length} image${targets.length === 1 ? '' : 's'}.` : 'Upload the images (posters) the phone should recognise.');
+  loadSizes();
   selectTarget(targets[0] ? targets[0].id : null);
   renderPublishState();
   checkMissingQuality();

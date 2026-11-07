@@ -42,6 +42,9 @@
   .bottom { display: flex; flex-direction: column; gap: 8px; }
   .looknow { background: var(--glass); border-radius: 12px; padding: 10px 14px; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .looknow.on { background: var(--look); color: #2a1606; }
+  .distnow { background: var(--glass); border-radius: 12px; padding: 8px 14px; font-size: 15px; font-variant-numeric: tabular-nums; cursor: pointer; }
+  .distnow b { font-size: 20px; }
+  .distnow small { display: block; opacity: .75; font-size: 12px; margin-top: 2px; }
   ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   ol li { background: var(--glass); border-radius: 8px; padding: 5px 10px; font-size: 13px; display: flex; justify-content: space-between; gap: 10px; font-variant-numeric: tabular-nums; }
   ol li .d { color: var(--muted); }
@@ -84,6 +87,7 @@
         <span id="pTime" class="ptime">0:00 / 0:00</span>
       </div>
     </div>
+    <div id="distNow" class="distnow" hidden title="Tap to calibrate with a measured distance"></div>
     <div id="lookNow" class="looknow">Point the circle at an image</div>
     <ol id="recent"></ol>
   </div>
@@ -429,6 +433,54 @@ function glide(dt) {
   }
 }
 
+/* ---------- distance to the painting (shown only, not saved) ----------
+   MindAR places each image 1 "image width" wide, so the distance from the camera to the image's
+   centre in image widths is |position| / scale of its anchor; times the painting's real width
+   (Painting sizes in the AR editor) gives meters. The angle is between the painting's facing
+   direction and the line to the phone (0° = straight on). */
+let dist = null;   // { idx, widths, angle } smoothed
+let distScale = (() => { try { return +localStorage.getItem('arviewer.distScale') || 1; } catch (e) { return 1; } })();
+const dPos = new THREE.Vector3(), dRot = new THREE.Quaternion(), dScl = new THREE.Vector3(), dN = new THREE.Vector3();
+function measureDistance(idx, dt) {
+  const a = idx === null ? null : arAnchors[idx];
+  if (!a || !a.anchor.group.visible) { dist = null; return; }
+  a.anchor.group.matrixWorld.decompose(dPos, dRot, dScl);
+  if (!(dScl.x > 0)) return;
+  const widths = dPos.length() / dScl.x;
+  dN.set(0, 0, 1).applyQuaternion(dRot);
+  const angle = Math.acos(Math.max(-1, Math.min(1, dN.dot(dPos.clone().negate().normalize())))) * 180 / Math.PI;
+  const k = 1 - Math.exp(-dt / 0.4);   // about half a second of averaging: steadier numbers
+  if (!dist || dist.idx !== idx) dist = { idx, widths, angle };
+  else { dist.widths += (widths - dist.widths) * k; dist.angle += (angle - dist.angle) * k; }
+}
+function renderDistance() {
+  const el = $('distNow');
+  if (!dist) { el.hidden = true; return; }
+  const t = targetsById.get(published.target_ids[dist.idx]);
+  const w = t && +t.width_m;
+  const side = dist.angle < 10 ? 'straight on' : `${Math.round(dist.angle)}° to the side`;
+  el.hidden = false;
+  el.innerHTML = w
+    ? `<b>${(dist.widths * w * distScale).toFixed(2)} m</b> from ${esc(t.name)} · ${side}<small>painting ${Math.round(w * 100)} cm wide${distScale !== 1 ? ` · calibrated ×${distScale.toFixed(2)}` : ''} · test only, not saved</small>`
+    : `<b>${dist.widths.toFixed(1)}</b> painting widths from ${esc(t ? t.name : 'image')} · ${side}<small>Add its size in the AR editor (Painting sizes) to see meters</small>`;
+}
+// One-time correction for this phone's camera: stand at a measured distance and enter it
+$('distNow').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!dist) return;
+  const t = targetsById.get(published.target_ids[dist.idx]), w = t && +t.width_m;
+  if (!w) return;
+  const shown = dist.widths * w;
+  const v = prompt(`Calibrate this phone: measure the real distance from the phone to the painting with a tape and enter it in meters.\n(Now showing ${(shown * distScale).toFixed(2)} m. Enter 0 to undo the calibration.)`, '');
+  if (v === null) return;
+  const real = parseFloat(String(v).replace(',', '.'));
+  if (real === 0) distScale = 1;
+  else if (Number.isFinite(real) && real > 0.1 && real < 20) distScale = real / shown;
+  else return;
+  try { localStorage.setItem('arviewer.distScale', String(distScale)); } catch (err) {}
+  renderDistance();
+});
+
 /* ---------- content mode ---------- */
 function setMode(m) {
   if (look && m !== mode) { finishLook(look, now()); look = null; }   // a look belongs to one mode
@@ -516,13 +568,14 @@ async function startAR() {
       let pointed = null;
       for (const i of found) if (centreIsOn(anchors[i].target, anchors[i].anchor.group, camera)) { pointed = i; break; }
       updateLook(pointed);
+      measureDistance(pointed !== null ? pointed : (found.size ? [...found][0] : null), dt);
       samplePose();
       reportLive();
       renderer.render(scene, camera);
       const t = performance.now();
-      if (t - uiAt > 100) { uiAt = t; renderLookNow(); renderPlayer(); }
+      if (t - uiAt > 100) { uiAt = t; renderLookNow(); renderPlayer(); renderDistance(); }
     });
-    window.__ar = { mind, found, anchors, media, get look() { return look; }, get pose() { return pose; }, poseQueue, cameraPose };   // for testing
+    window.__ar = { mind, found, anchors, media, get dist() { return dist; }, get look() { return look; }, get pose() { return pose; }, poseQueue, cameraPose };   // for testing
   } catch (e) {
     $('startInfo').textContent = `Could not start the camera: ${e.message || e}. Allow camera access for this page and try again.`;
     $('startInfo').className = 'err';

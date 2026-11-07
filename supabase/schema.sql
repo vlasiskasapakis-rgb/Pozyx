@@ -300,5 +300,10 @@ alter table ar_live add column if not exists pitch   real;
 -- directions; set in the live map with "Phone points along A1 -> A2 now"
 alter table room_model add column if not exists x_axis_heading real;
 
+-- Real size of each painting as it hangs (meters), entered in the AR editor (Painting sizes);
+-- the AR viewer uses the width to show how far the phone is from the painting
+alter table ar_targets add column if not exists width_m  real;
+alter table ar_targets add column if not exists height_m real;
+
 -- Make the API notice new tables and columns straight away
 notify pgrst, 'reload schema';

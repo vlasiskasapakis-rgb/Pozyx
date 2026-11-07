@@ -159,6 +159,22 @@ Needs the updated `supabase/schema.sql` (tables `ar_targets`, `ar_overlays`,
   and the Looks list are coloured by mode (orange Generic, purple AI assisted). Replays in the live map show looks as bars under the
    timeline and in a "Looks" list.
 
+### Painting sizes and distance (test)
+
+In the AR editor, **Painting sizes** opens a table of all images: type each
+painting's real width (and height, or leave it empty to work it out from the
+picture's shape) in centimetres, as it hangs without the frame. Enter moves to
+the next painting; it saves on its own (columns `width_m`, `height_m` of
+`ar_targets`: run the updated `supabase/schema.sql` once).
+
+The AR viewer then shows, while an image is recognised, how far the phone is
+from it and at what angle ("1.42 m from MIRO_A2 · 12° to the side"). MindAR
+measures the distance in image widths; times the real width gives meters,
+averaged over about half a second. Tap the distance to calibrate this phone:
+measure the real distance with a tape, enter it, and the phone keeps that
+correction (enter 0 to undo). This is a test display only: the distance is
+not saved anywhere.
+
 ## 6. Room view (3D model of the space)
 
 The side panels fold away: click a panel's title (Room model, Tags, Anchors,
