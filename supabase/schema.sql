@@ -305,5 +305,13 @@ alter table room_model add column if not exists x_axis_heading real;
 alter table ar_targets add column if not exists width_m  real;
 alter table ar_targets add column if not exists height_m real;
 
+-- Distance from the phone to the painting during each look (AR viewer, from MindAR and the painting's
+-- width): average, closest and farthest in meters, and the average viewing angle (0 = straight on).
+-- Empty for looks of paintings without a size, and for looks saved before these columns existed.
+alter table looks add column if not exists distance_avg_m real;
+alter table looks add column if not exists distance_min_m real;
+alter table looks add column if not exists distance_max_m real;
+alter table looks add column if not exists view_angle_deg real;
+
 -- Make the API notice new tables and columns straight away
 notify pgrst, 'reload schema';

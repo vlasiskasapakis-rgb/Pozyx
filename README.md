@@ -172,8 +172,15 @@ from it and at what angle ("1.42 m from MIRO_A2 · 12° to the side"). MindAR
 measures the distance in image widths; times the real width gives meters,
 averaged over about half a second. Tap the distance to calibrate this phone:
 measure the real distance with a tape, enter it, and the phone keeps that
-correction (enter 0 to undo). This is a test display only: the distance is
-not saved anywhere.
+correction (enter 0 to undo).
+
+Each look is saved with the distance during it (`looks.distance_avg_m`,
+`distance_min_m`, `distance_max_m`, and `view_angle_deg`, 0 = straight on; run
+the updated `supabase/schema.sql`). Only paintings with a size get one; older
+looks simply have none. The replay's Looks table shows it (hover for closest
+to farthest), Export JSON includes `distanceAvgM` / `distanceMinM` /
+`distanceMaxM` / `viewAngleDeg` (-1 = not measured), and Route from looks
+shows "1.4 m away" per stop.
 
 ## 6. Room view (3D model of the space)
 

@@ -27,6 +27,8 @@ using UnityEngine;
     public float start; public float end; public float duration;
     public string image; public string imageId; public string mode; public string otherSession;
     public long startUnixMs; public long endUnixMs;
+    // distance from the phone to the painting in meters (-1 = not measured) and viewing angle (0 = straight on)
+    public float distanceAvgM = -1f; public float distanceMinM = -1f; public float distanceMaxM = -1f; public float viewAngleDeg = -1f;
 }
 [Serializable] public class PozyxTap { public float t; public string label; public long unixMs; }
 [Serializable] public class PozyxOrientation { public float t; public float heading; public float pitch; public float roll; }

@@ -934,11 +934,12 @@ function prepareLooks(data, shift) {
   let h = '';
   if (!looks.length) h = '<div class="empty">No looks during this recording.</div>';
   else {
-    h = '<table><tr><th>Image</th><th>Mode</th><th>Start</th><th>t (s)</th><th>Length</th><th>Note</th></tr>';
+    h = '<table><tr><th>Image</th><th>Mode</th><th>Start</th><th>t (s)</th><th>Length</th><th title="Average distance from the phone to the painting (closest–farthest)">Distance</th><th>Note</th></tr>';
     looks.forEach((lk, i) => {
       const note = lk.outside || (lk.other ? `session: ${lk.other}` : '');
       h += `<tr${lk.outside ? ' class="outside"' : ` data-i="${i}"`}><td>${esc(lk.name)}</td><td><span class="modechip ${lk.modeKey}">${esc(lk.mode)}</span></td><td class="num">${clockTime(lk.unix).slice(0, 8)}</td>` +
-        `<td class="num">${lk.a.toFixed(2)}</td><td class="num">${(lk.b - lk.a).toFixed(1)} s</td><td class="note">${esc(note)}</td></tr>`;
+        `<td class="num">${lk.a.toFixed(2)}</td><td class="num">${(lk.b - lk.a).toFixed(1)} s</td>` +
+        `<td class="num" title="${lk.dist ? `${lk.dist.min.toFixed(2)}–${lk.dist.max.toFixed(2)} m${lk.dist.angle != null ? `, ${lk.dist.angle}° to the side` : ''}` : 'not measured'}">${lk.dist ? lk.dist.avg.toFixed(1) + ' m' : '–'}</td><td class="note">${esc(note)}</td></tr>`;
     });
     h += '</table>';
   }
@@ -969,7 +970,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-06h';
+const CODE_VERSION = '2026-11-07a';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1204,6 +1205,7 @@ async function loadRecording(r, sid) {
     looks: lookRows && lookRows.length ? lookRows.map(lk => ({
       a0: (+lk.start_unix_ms - start) / 1000, b0: (+lk.end_unix_ms - start) / 1000, unix: +lk.start_unix_ms,
       name: lk.target_name || 'image', target_id: lk.target_id, modeKey: lk.mode || 'generic',
+      dist: lk.distance_avg_m != null ? { avg: +lk.distance_avg_m, min: +lk.distance_min_m, max: +lk.distance_max_m, angle: lk.view_angle_deg != null ? +lk.view_angle_deg : null } : null,
       mode: lk.mode === 'ai' ? 'AI assisted' : lk.mode === 'generic' ? 'Generic' : '', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
     })) : null,
     poses,
@@ -1255,6 +1257,9 @@ function exportSession(data, shift) {
       start: r3(Math.max(0, a)), end: r3(Math.min(dur, b)), duration: r3(Math.min(dur, b) - Math.max(0, a)),
       image: lk.name, imageId: lk.target_id || '', mode: lk.modeKey || 'generic', otherSession: lk.other || '',
       startUnixMs: lk.unix, endUnixMs: Math.round(lk.unix + (lk.b0 - lk.a0) * 1000),
+      // distance from the phone to the painting in meters; -1 = not measured
+      distanceAvgM: lk.dist ? lk.dist.avg : -1, distanceMinM: lk.dist ? lk.dist.min : -1, distanceMaxM: lk.dist ? lk.dist.max : -1,
+      viewAngleDeg: lk.dist && lk.dist.angle != null ? lk.dist.angle : -1,
     })),
     taps: taps.map(({ tp, t }) => ({ t: r3(t), label: tp.label || '', unixMs: tp.unix_ms || 0 })),
     xAxisHeading: xAxisHeading === null ? -1 : xAxisHeading,   // -1 = compass not set up
@@ -1649,9 +1654,14 @@ function routeStopsFrom(rows) {
   for (const r of rows) {
     const a = +r.start_unix_ms, b = +r.end_unix_ms, name = r.target_name || '';
     if (!name || !(b > a)) continue;
+    const d = r.distance_avg_m != null ? { avg: +r.distance_avg_m, min: +r.distance_min_m, max: +r.distance_max_m, w: (b - a) / 1000 } : null;
     const last = stops[stops.length - 1];
-    if (last && last.name === name && a - last.end < 15000) { last.end = Math.max(last.end, b); last.seconds += (b - a) / 1000; continue; }
-    stops.push({ name, start: a, end: b, seconds: (b - a) / 1000, mode: r.mode || '' });
+    if (last && last.name === name && a - last.end < 15000) {
+      last.end = Math.max(last.end, b); last.seconds += (b - a) / 1000;
+      if (d) last.dists.push(d);
+      continue;
+    }
+    stops.push({ name, start: a, end: b, seconds: (b - a) / 1000, mode: r.mode || '', dists: d ? [d] : [] });
   }
   return stops.filter(x => x.seconds >= 1);
 }
@@ -1703,12 +1713,17 @@ async function showRouteFromLooks() {
   let rows;
   try {
     rows = await pozyxDb.request(id === '-'
-      ? `looks?select=target_name,start_unix_ms,end_unix_ms,mode&session_id=is.null&start_unix_ms=gte.${Date.now() - 86400000}&order=start_unix_ms.asc`
-      : `looks?select=target_name,start_unix_ms,end_unix_ms,mode&session_id=eq.${encodeURIComponent(id)}&order=start_unix_ms.asc`);
+      ? `looks?select=*&session_id=is.null&start_unix_ms=gte.${Date.now() - 86400000}&order=start_unix_ms.asc`
+      : `looks?select=*&session_id=eq.${encodeURIComponent(id)}&order=start_unix_ms.asc`);
   } catch (e) { $('routeInfo').textContent = `Could not load the looks: ${e.message}`; return; }
   const stops = routeStopsFrom(rows);
   if (!stops.length) { $('routeInfo').textContent = 'No looks in this session (looks under a second are left out).'; $('routeList').innerHTML = ''; return; }
-  const items = stops.map(x => ({ name: x.name, seconds: x.seconds, label: clockTime(x.start).slice(0, 8) }));
+  // distance to the painting, when the AR viewer measured it (time-weighted over merged looks)
+  for (const x of stops) {
+    const tw = x.dists.reduce((t, d) => t + d.w, 0);
+    x.dist = tw ? { avg: x.dists.reduce((t, d) => t + d.avg * d.w, 0) / tw, min: Math.min(...x.dists.map(d => d.min)), max: Math.max(...x.dists.map(d => d.max)) } : null;
+  }
+  const items = stops.map(x => ({ name: x.name, seconds: x.seconds, dist: x.dist ? x.dist.avg : null, distRange: x.dist ? [x.dist.min, x.dist.max] : null, label: clockTime(x.start).slice(0, 8) }));
   let measuredStops = 0, measuredLegs = 0;
   if ($('routePozyx').checked) {
     let track = null;
@@ -1746,7 +1761,7 @@ async function showRouteFromLooks() {
       (res.missing.length ? ` Not found in the model (left out): ${[...new Set(res.missing)].join(', ')}.` : '')
     : `None of the scanned posters were found in the model: ${[...new Set(res.missing)].join(', ')}. Name their materials or textures like the AR images.`;
   $('routeList').innerHTML = res.stops.length ? '<table>' + res.stops.map((x, i) =>
-    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s${x.sameSpotAs ? ` · same spot as ${x.sameSpotAs}` : ''}${x.rejected ? `<br><span style="color:var(--tap)">${esc(x.rejected)}: placed in front of it instead</span>` : ''}</span></td>` +
+    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s${x.dist ? ` · ${x.dist.toFixed(1)} m away (${x.distRange[0].toFixed(1)}–${x.distRange[1].toFixed(1)})` : ''}${x.sameSpotAs ? ` · same spot as ${x.sameSpotAs}` : ''}${x.rejected ? `<br><span style="color:var(--tap)">${esc(x.rejected)}: placed in front of it instead</span>` : ''}</span></td>` +
     `<td class="walk">${i < res.stops.length - 1 ? (x.walkMeasured ? `→ ${x.walk.toFixed(1)} m <b>measured</b>` : `→ ≈ ${x.walk.toFixed(1)} m${x.direct ? ' (straight line: no way round found)' : ' estimated'}`) : 'end'}</td></tr>`).join('') + '</table>' : '';
   const usedStops = res.stops.filter(x => x.measured).length, rejectedStops = res.stops.filter(x => x.rejected).length;
   const usedLegs = res.stops.filter(x => x.walkMeasured).length;

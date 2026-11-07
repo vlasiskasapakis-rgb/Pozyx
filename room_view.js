@@ -1126,7 +1126,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     drawRoute();
     const groupOf = new Map();
     routeGroups.forEach((g, n) => g.idx.forEach(i => groupOf.set(i, g.idx)));
-    return { stops: stops.map((s, i) => ({ rejected: s.rejected || '', sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
+    return { stops: stops.map((s, i) => ({ rejected: s.rejected || '', dist: s.dist || null, distRange: s.distRange || null, sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
   }
   function drawRoute() {
     const mat = new THREE.MeshBasicMaterial({ color: ROUTE_COLOR, transparent: true, opacity: 0.85, depthTest: false });
@@ -1203,9 +1203,9 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       const secs = g.idx.reduce((t, i) => t + (routeStops[i].seconds || 0), 0);
       // several posters scanned from one spot: a short label, the full list on hover
       l.textContent = names.length <= 2
-        ? `${nums(g.idx)} · ${names.join(' / ')} · ${Math.round(secs)} s`
+        ? `${nums(g.idx)} · ${names.join(' / ')} · ${Math.round(secs)} s${g.idx.length === 1 && routeStops[g.idx[0]].dist ? ` · ${routeStops[g.idx[0]].dist.toFixed(1)} m` : ''}`
         : `${nums(g.idx)} · ${names.length} posters from here · ${Math.round(secs)} s`;
-      l.title = g.idx.map(i => `${i + 1}. ${routeStops[i].name} · ${Math.round(routeStops[i].seconds || 0)} s`).join('\n');
+      l.title = g.idx.map(i => `${i + 1}. ${routeStops[i].name} · ${Math.round(routeStops[i].seconds || 0)} s${routeStops[i].dist ? ` · ${routeStops[i].dist.toFixed(1)} m away` : ''}`).join('\n');
       container.appendChild(l);
       routeLabels.push(l);
     });
