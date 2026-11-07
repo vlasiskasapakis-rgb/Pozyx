@@ -320,6 +320,7 @@
     <button id="btnDelSession" class="danger" title="Deletes the session with all its recordings and phone taps">Delete session</button>
   </div>
   <div id="dbRecList" class="reclist"></div>
+  <div id="dbLooks" class="reclist" style="margin-top:10px"></div>
   <div class="dlgfoot" style="justify-content:space-between; align-items:center">
     <label title="Positions are exported at this height instead of the measured one">Height in export
       <input type="number" id="exportHeight" step="0.1" value="1" style="width:70px; font:inherit; padding:5px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text)"> m</label>
@@ -970,7 +971,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-07b';
+const CODE_VERSION = '2026-11-07c';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1100,6 +1101,41 @@ async function openDbDialog() {
 }
 const sessionFilter = (sid) => sid ? `session_id=eq.${encodeURIComponent(sid)}` : 'session_id=is.null';
 let dbRecs = [];
+// The AR looks saved in the session, with or without a Pozyx recording
+async function loadSessionLooks(sid) {
+  const box = $('dbLooks');
+  box.innerHTML = '';
+  let rows;
+  try { rows = await pozyxDb.request(`looks?select=*&${sessionFilter(sid)}&order=start_unix_ms.asc&limit=1000`); }
+  catch (e) { box.innerHTML = `<div class="empty">Could not load the looks: ${esc(e.message)}</div>`; return; }
+  if ($('dbSession').value !== sid) return;   // another session was picked meanwhile
+  if (!rows.length) { box.innerHTML = '<div class="empty">No AR looks in this session yet.</div>'; return; }
+  const withDist = rows.filter(r => r.distance_avg_m != null).length;
+  box.innerHTML = `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px"><b style="flex:1">${rows.length} AR look${rows.length === 1 ? '' : 's'}` +
+    `${withDist ? ` · ${withDist} with distance` : ''}</b><button id="dbRoute" class="primary">Show route</button></div>` +
+    '<table style="width:100%; font-size:13px; font-variant-numeric:tabular-nums">' +
+    '<tr><th style="text-align:left">Time</th><th style="text-align:left">Image</th><th>Length</th><th>Distance</th></tr>' +
+    rows.map(r => `<tr><td>${clockTime(+r.start_unix_ms).slice(0, 8)}</td><td>${esc(r.target_name || '')}${r.mode === 'ai' ? ' · AI' : ''}</td>` +
+      `<td class="num">${((+r.end_unix_ms - +r.start_unix_ms) / 1000).toFixed(1)} s</td>` +
+      `<td class="num" title="${r.distance_avg_m != null ? `${(+r.distance_min_m).toFixed(2)}–${(+r.distance_max_m).toFixed(2)} m` : 'not measured'}">` +
+      `${r.distance_avg_m != null ? `${(+r.distance_avg_m).toFixed(1)} m${r.view_angle_h_deg != null ? `<br><small>${esc(sideText(+r.view_angle_h_deg, r.view_angle_v_deg != null ? +r.view_angle_v_deg : null))}</small>` : ''}` : '–'}</td></tr>`).join('') +
+    '</table>';
+  $('dbRoute').onclick = () => openRouteFor(sid);
+}
+// Room view with this session's route (waits for the room model to load)
+async function openRouteFor(sid) {
+  $('dbDialog').close();
+  setView('room');
+  const sect = document.querySelector('details[data-fold="route"]');
+  if (sect) sect.open = true;
+  const card = $('roomCard');
+  if (card) card.classList.remove('closed');
+  routePicked = sid || '-';
+  for (let i = 0; i < 120 && !(room && room.hasModel); i++) { $('routeInfo').textContent = 'Loading the room model…'; await new Promise(r => setTimeout(r, 500)); }
+  fillRouteSessions();
+  if (sect) sect.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  showRouteFromLooks();
+}
 async function loadRecList() {
   const sid = $('dbSession').value, list = $('dbRecList');
   $('btnDelSession').disabled = !sid;
@@ -1110,7 +1146,8 @@ async function loadRecList() {
     list.innerHTML = `<div class="empty">Could not load recordings: ${esc(e.message)}</div>`;
     return;
   }
-  if (!dbRecs.length) { list.innerHTML = '<div class="empty">No recordings in this session yet.</div>'; return; }
+  loadSessionLooks(sid);
+  if (!dbRecs.length) { list.innerHTML = '<div class="empty">No Pozyx recordings in this session (press Record in the live map to make one).</div>'; return; }
   list.innerHTML = dbRecs.map((r, i) => {
     const d = new Date(+r.started_at_unix_ms);
     return `<div class="recrow"><span class="when">${d.toLocaleDateString()} ${clockTime(+r.started_at_unix_ms).slice(0, 8)}</span>` +
