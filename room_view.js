@@ -1350,15 +1350,17 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   function stepRoutePlay(dt) {
     const p = routePlay;
     if (p.wait > 0) { p.wait -= dt; if (p.wait <= 0) p.look = ''; return; }
+    if (p.finished) { routePlay = null; needsRender = true; if (onRouteEnd) onRouteEnd(); return; }   // after the last painting lit up
     p.d += dt * 2;
     let left = p.d, i = 1;
     for (; i < routePts.length; i++) { const L = routePts[i].distanceTo(routePts[i - 1]); if (left <= L) break; left -= L; }
-    if (i >= routePts.length) {   // the end: stop at the last stop (Play starts again from the first)
-      const last = routePts[routePts.length - 1];
+    if (i >= routePts.length) {   // the end: the last painting lights up like the others, then Play stops there
+      const last = routePts[routePts.length - 1], k = routeStops.length - 1;
       routeDot.position.copy(last).setY(last.y + 0.25);
-      routePlay = null;
-      needsRender = true;
-      if (onRouteEnd) onRouteEnd();
+      p.stop = k;
+      p.look = routeStops[k].name;
+      p.wait = Math.min(3, 0.8 + (routeStops[k].seconds || 0) / 10);
+      p.finished = true;
       return;
     }
     const a = routePts[i - 1], b = routePts[i], L = a.distanceTo(b) || 1;
