@@ -973,7 +973,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-07l';
+const CODE_VERSION = '2026-11-07m';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1702,6 +1702,7 @@ function routeStopsFrom(rows) {
     const a = +r.start_unix_ms, b = +r.end_unix_ms, name = r.target_name || '';
     if (!name || !(b > a)) continue;
     const d = r.distance_avg_m != null ? { avg: +r.distance_avg_m, min: +r.distance_min_m, max: +r.distance_max_m, w: (b - a) / 1000,
+      path: Array.isArray(r.path) && r.path.length >= 2 ? r.path : null,
       h: r.view_angle_h_deg != null ? +r.view_angle_h_deg : null, v: r.view_angle_v_deg != null ? +r.view_angle_v_deg : null } : null;
     const last = stops[stops.length - 1];
     if (last && last.name === name && a - last.end < 15000) {
@@ -1774,7 +1775,7 @@ async function showRouteFromLooks() {
       h: aw ? withAngles.reduce((t, d) => t + d.h * d.w, 0) / aw : null, v: aw ? withAngles.reduce((t, d) => t + (d.v || 0) * d.w, 0) / aw : null } : null;
   }
   const items = stops.map(x => ({ name: x.name, seconds: x.seconds, dist: x.dist ? x.dist.avg : null, distRange: x.dist ? [x.dist.min, x.dist.max] : null,
-    looks: x.dists.filter(d => d.h != null).map(d => ({ dist: d.avg, h: d.h, v: d.v })),   // each single look, to draw the phone where it was
+    looks: x.dists.filter(d => d.h != null).map(d => ({ dist: d.avg, h: d.h, v: d.v, path: d.path })),   // each single look, to draw the phone where it was
     angleH: x.dist ? x.dist.h : null, angleV: x.dist ? x.dist.v : null, label: clockTime(x.start).slice(0, 8) }));
   let measuredStops = 0, measuredLegs = 0;
   if ($('routePozyx').checked) {

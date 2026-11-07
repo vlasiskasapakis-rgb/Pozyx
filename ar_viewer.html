@@ -214,6 +214,12 @@ async function send() {
       problem = '';
       saveLocal();
     } catch (e) {
+      if (savePath && /'path'|"path"|column.*\bpath\b/.test(e.message || '')) {   // database without looks.path: save the rest
+        savePath = false;
+        outbox.forEach(sameFields);
+        flashStatus('Phone movement not saved: run the updated supabase/schema.sql in Supabase.');
+        continue;
+      }
       if (saveDistance && /distance_|view_angle/.test(e.message || '')) {   // older database: save the looks without the distance
         saveDistance = false;
         outbox.forEach(sameFields);
@@ -257,11 +263,12 @@ function updateLook(idx) {
   if (look && idx === look.idx) { look.last = t; return; }
   if (look && idx !== null) { finishLook(look, t); look = null; }            // moved straight to another image
   else if (look && t - look.last > GRACE_MS) { finishLook(look, look.last); look = null; }
-  if (!look && idx !== null) look = { idx, start: t, last: t, mode, dsum: 0, asum: 0, hsum: 0, vsum: 0, dn: 0, dmin: Infinity, dmax: 0 };
+  if (!look && idx !== null) look = { idx, start: t, last: t, mode, dsum: 0, asum: 0, hsum: 0, vsum: 0, dn: 0, dmin: Infinity, dmax: 0, path: [] };
 }
 // one distance reading per frame while the look lasts (meters, with this phone's calibration)
 let saveDistance = true;   // false when the database has no distance columns yet
 const DIST_KEYS = ['distance_avg_m', 'distance_min_m', 'distance_max_m', 'view_angle_deg', 'view_angle_h_deg', 'view_angle_v_deg'];
+let savePath = true;   // false when the database has no looks.path column yet (the rest is still saved)
 // Rows sent together must all have the same fields (the database refuses a mix), so every look
 // carries the distance fields, empty when not measured, or none of them on an older database
 function sameFields(r) {
@@ -269,6 +276,8 @@ function sameFields(r) {
     if (!saveDistance) delete r[k];
     else if (!(k in r)) r[k] = null;
   }
+  if (!saveDistance || !savePath) delete r.path;
+  else if (!('path' in r)) r.path = null;
   return r;
 }
 function addDistanceSample() {
@@ -278,6 +287,12 @@ function addDistanceSample() {
   const m = dist.widths * w * distScale;
   look.dsum += m; look.asum += dist.angle; look.hsum += dist.h; look.vsum += dist.v; look.dn++;
   look.dmin = Math.min(look.dmin, m); look.dmax = Math.max(look.dmax, m);
+  // the phone's movement during the look, 4 times a second: t = ms from the look's start,
+  // d = meters to the painting's centre, h = left/right, v = up/down angle (as above)
+  const t0 = now() - look.start;
+  if (!look.path.length || t0 - look.path[look.path.length - 1].t >= 250) {
+    look.path.push({ t: Math.round(t0), d: Math.round(m * 100) / 100, h: Math.round(dist.h), v: Math.round(dist.v) });
+  }
 }
 function finishLook(l, end) {
   if (end - l.start < MIN_LOOK_MS) return;
@@ -294,6 +309,10 @@ function finishLook(l, end) {
     row.view_angle_deg = Math.round(l.asum / l.dn);
     row.view_angle_h_deg = Math.round(l.hsum / l.dn);   // − from the left, + from the right
     row.view_angle_v_deg = Math.round(l.vsum / l.dn);   // + phone above the centre, − below
+    if (savePath && l.path && l.path.length >= 2) {   // at most 600 points: longer looks keep every 2nd, 3rd…
+      const step = Math.ceil(l.path.length / 600);
+      row.path = l.path.filter((q, i) => i % step === 0);
+    }
   }
   recent.unshift({ name: target.name, mode: l.mode, start: row.start_unix_ms, ms: row.end_unix_ms - row.start_unix_ms, dist: row.distance_avg_m });
   recent = recent.slice(0, 20);

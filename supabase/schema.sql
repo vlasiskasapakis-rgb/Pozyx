@@ -317,6 +317,9 @@ alter table looks add column if not exists view_angle_deg real;
 -- (positive = phone above the painting's centre, negative = below)
 alter table looks add column if not exists view_angle_h_deg real;
 alter table looks add column if not exists view_angle_v_deg real;
+-- the phone's movement during the look, 4 times a second: [{t: ms from the start, d: meters,
+-- h: left/right degrees, v: up/down degrees}, ...]; empty for older looks
+alter table looks add column if not exists path jsonb;
 
 -- Make the API notice new tables and columns straight away
 notify pgrst, 'reload schema';

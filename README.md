@@ -186,7 +186,13 @@ position, for upright paintings on walls. **Show the phone at every look**
 (on by default) also draws an orange phone for each single look with a
 distance, where the camera puts it: at its distance, side and height from
 the painting, with a line to the painting and one down to the floor. With a
-Pozyx recording this shows both at once, to compare the camera with Pozyx. Only paintings with a size get one; older
+Pozyx recording this shows both at once, to compare the camera with Pozyx.
+Looks saved from now on also keep the phone's movement during the look
+(`looks.path`: distance and both angles 4 times a second; run the updated
+`supabase/schema.sql`). The route draws it as a thin orange trail at each
+phone, and **▶ Play** re-enacts it: at each stop a phone moves the way the
+real one did (3 times faster, 1.5–8 s) before walking on. Older looks have no
+movement and show exactly as before. Only paintings with a size get one; older
 looks simply have none. The replay's Looks table shows it (hover for closest
 to farthest), Export JSON includes `distanceAvgM` / `distanceMinM` /
 `distanceMaxM` / `viewAngleDeg` (-1 = not measured) and `hasViewAngles` / `viewAngleHDeg` / `viewAngleVDeg`, and Route from looks

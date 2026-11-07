@@ -921,6 +921,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     routeGroup.clear();
     routeLabels.forEach(l => l.remove());
     routeLabels = []; routeStops = []; routeGroups = []; stopDashGroups = []; routePts = []; routeLen = 0; routePlay = null;
+    playPhone.visible = false;
     needsRender = true;
   }
   // the smallest part of the model that uses the image's material (the poster, not a whole wall)
@@ -1255,6 +1256,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     lookPhoneCount = 0;
 
     const lineMat = new THREE.LineBasicMaterial({ color: 0xe8812a, transparent: true, opacity: 0.8, depthTest: false });
+    const trailMat = new THREE.LineBasicMaterial({ color: 0xe8812a, transparent: true, opacity: 0.55, depthTest: false });
     const dotGeo = new THREE.CircleGeometry(0.05, 16).rotateX(-Math.PI / 2), dotMat = new THREE.MeshBasicMaterial({ color: 0xe8812a, transparent: true, opacity: 0.6, depthTest: false });
     routeStops.forEach((s) => {
       for (const lk of s.looks || []) {
@@ -1270,6 +1272,9 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
         dot.position.copy(floor).setY(floor.y + 0.03);
         dot.renderOrder = 6;
         lookPhoneGroup.add(phone, dot, new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, floor]), lineMat));
+        // the phone's movement during the look (newer looks only): a thin orange trail
+        const trail = (lk.path || []).map(q => lookPhoneSpot(s, { dist: q.d, h: q.h, v: q.v })).filter(Boolean);
+        if (trail.length >= 2) lookPhoneGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(trail), trailMat));
         lookDashes(p, s.poster, lookPhoneGroup);   // the yellow look line starts at the phone
       }
     });
@@ -1341,15 +1346,59 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
   // a dot walks the route (2 m/s), stopping at each poster while it lights up
   function playRoute(on) {
     if (!routeDot || routePts.length < 1) return false;
+    if (!on) playPhone.visible = false;
     routePlay = on ? { d: 0, wait: 1.2, stop: 0, look: routeStops[0] ? routeStops[0].name : '' } : null;
+    playPhone.visible = false;
+    if (on && routeStops[0]) startStopTrack(routePlay, 0);
     routeDot.visible = !!on;
     if (on) routeDot.position.copy(routePts[0]).setY(routePts[0].y + 0.25);
     needsRender = true;
     return !!on;
   }
+  // At a stop, the phone's recorded movement during its looks is played back (3 times faster, between
+  // 1.5 and 8 s); stops without a recorded movement wait as before
+  const playPhone = new THREE.Sprite();
+  playPhone.visible = false;
+  playPhone.renderOrder = 9;
+  scene.add(playPhone);
+  function startStopTrack(p, k) {
+    const s = routeStops[k];
+    p.track = null;
+    if (!s || !showLookPhones) return;
+    const pts = [];
+    let t0 = 0;
+    for (const lk of s.looks || []) {
+      const path = (lk.path || []).map(q => ({ t: t0 + q.t / 1000, pos: lookPhoneSpot(s, { dist: q.d, h: q.h, v: q.v }) })).filter(q => q.pos);
+      if (path.length < 2) continue;
+      pts.push(...path);
+      t0 = path[path.length - 1].t + 0.5;
+    }
+    if (pts.length < 2) return;
+    const dur = pts[pts.length - 1].t - pts[0].t;
+    p.track = pts;
+    p.trackStart = pts[0].t;
+    p.trackDur = dur;
+    p.wait = p.waitTotal = Math.max(1.5, Math.min(8, dur / 3));
+    playPhone.material = phoneIconMat();
+    playPhone.scale.set(0.034, 0.056, 1);   // a bit bigger than the look markers
+    playPhone.visible = true;
+    movePlayPhone(p, 0);
+  }
+  function movePlayPhone(p, frac) {
+    const tt = p.trackStart + frac * p.trackDur, tr = p.track;
+    let i = 1;
+    while (i < tr.length - 1 && tr[i].t < tt) i++;
+    const a = tr[i - 1], b = tr[i], k = b.t > a.t ? Math.min(1, Math.max(0, (tt - a.t) / (b.t - a.t))) : 1;
+    playPhone.position.copy(a.pos).lerp(b.pos, k);
+  }
   function stepRoutePlay(dt) {
     const p = routePlay;
-    if (p.wait > 0) { p.wait -= dt; if (p.wait <= 0) p.look = ''; return; }
+    if (p.wait > 0) {
+      p.wait -= dt;
+      if (p.track) movePlayPhone(p, 1 - Math.max(0, p.wait) / p.waitTotal);   // the phone repeats what it did there
+      if (p.wait <= 0) { p.look = ''; p.track = null; playPhone.visible = false; }
+      return;
+    }
     if (p.finished) { routePlay = null; needsRender = true; if (onRouteEnd) onRouteEnd(); return; }   // after the last painting lit up
     p.d += dt * 2;
     let left = p.d, i = 1;
@@ -1360,6 +1409,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       p.stop = k;
       p.look = routeStops[k].name;
       p.wait = Math.min(3, 0.8 + (routeStops[k].seconds || 0) / 10);
+      startStopTrack(p, k);
       p.finished = true;
       return;
     }
@@ -1367,7 +1417,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     routeDot.position.copy(a).lerp(b, left / L).setY(a.y + (b.y - a.y) * left / L + 0.25);
     // arrived at the next stop?
     const next = routeStops.findIndex((s, k) => k > p.stop && s.ptIndex !== undefined && s.ptIndex <= i - 1);
-    if (next > p.stop) { p.stop = next; p.wait = Math.min(3, 0.8 + (routeStops[next].seconds || 0) / 10); p.look = routeStops[next].name; routeDot.position.copy(routePts[routeStops[next].ptIndex]).setY(routePts[routeStops[next].ptIndex].y + 0.25); p.d = 0; for (let q = 1; q <= routeStops[next].ptIndex; q++) p.d += routePts[q].distanceTo(routePts[q - 1]); }
+    if (next > p.stop) { p.stop = next; p.wait = Math.min(3, 0.8 + (routeStops[next].seconds || 0) / 10); startStopTrack(p, next); p.look = routeStops[next].name; routeDot.position.copy(routePts[routeStops[next].ptIndex]).setY(routePts[routeStops[next].ptIndex].y + 0.25); p.d = 0; for (let q = 1; q <= routeStops[next].ptIndex; q++) p.d += routePts[q].distanceTo(routePts[q - 1]); }
   }
 
   // Two-point alignment: the caller asks for a click on the model; the point comes back in the
@@ -1428,6 +1478,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     showRoute, clearRoute, playRoute, setLookPhones, setRouteLabels,
     get routePlaying() { return !!routePlay; },
     set onRouteEnd(fn) { onRouteEnd = fn; },
+    get playPhonePos() { return playPhone.visible ? playPhone.position.toArray().map(v => +v.toFixed(2)) : null; },   // for testing
     get roomId() { return roomId; },
     roomAt(p) { const r = roomAt(p); return r ? r.id : null; },
     set onRoomClick(fn) { onRoomClick = fn; },
