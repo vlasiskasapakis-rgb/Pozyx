@@ -1107,7 +1107,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       const spot = pos ? floorAt(P(pos.x, pos.y, 0)) : cameraSpot || est.spot;
       const k = navNearest(spot);
       const poster = est ? est.poster : spot.clone().setY(spot.y + 1.5);
-      stops.push({ ...it, poster, k, measured: !!pos, cameraPlaced: !!cameraSpot, rejected, at: pos || cameraSpot || k === null ? floorAt(new THREE.Vector3(spot.x, planFloorY, spot.z)) : navPoint(k) });
+      stops.push({ ...it, poster, k, face: est ? est.face : null, flat: !!(est && est.flat), measured: !!pos, cameraPlaced: !!cameraSpot, rejected, at: pos || cameraSpot || k === null ? floorAt(new THREE.Vector3(spot.x, planFloorY, spot.z)) : navPoint(k) });
     }
     // the walk, stop by stop
     const pts = [], legs = [];
@@ -1137,7 +1137,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     drawRoute();
     const groupOf = new Map();
     routeGroups.forEach((g, n) => g.idx.forEach(i => groupOf.set(i, g.idx)));
-    return { stops: stops.map((s, i) => ({ rejected: s.rejected || '', dist: s.dist || null, distRange: s.distRange || null, angleH: s.angleH, angleV: s.angleV, cameraPlaced: !!s.cameraPlaced, sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
+    return { lookPhones: lookPhoneCount, stops: stops.map((s, i) => ({ rejected: s.rejected || '', dist: s.dist || null, distRange: s.distRange || null, angleH: s.angleH, angleV: s.angleV, cameraPlaced: !!s.cameraPlaced, sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
   }
   function drawRoute() {
     const mat = new THREE.MeshBasicMaterial({ color: ROUTE_COLOR, transparent: true, opacity: 0.85, depthTest: false });
@@ -1220,13 +1220,67 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       container.appendChild(l);
       routeLabels.push(l);
     });
+    drawLookPhones();
     routeDot = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 14), new THREE.MeshBasicMaterial({ color: 0xe8812a, depthTest: false }));
     routeDot.renderOrder = 7;
     routeDot.visible = false;
     routeGroup.add(routeDot);
     needsRender = true;
   }
-  let routeDot = null;
+  let routeDot = null, showLookPhones = true, lookPhoneGroup = null, lookPhoneCount = 0;
+  // Where the phone was during each single look, from the camera: the measured distance and the
+  // left/right and up/down angles from the painting's centre (upright paintings on walls), drawn as a
+  // small phone at its real height, facing the painting, with a line to it and a dot on the floor
+  function lookPhoneSpot(s, lk) {
+    if (!s.flat || !s.face || !(lk.dist > 0) || lk.h == null) return null;
+    const h = lk.h * Math.PI / 180, v = (lk.v || 0) * Math.PI / 180;
+    const right = new THREE.Vector3(0, 1, 0).cross(s.face).normalize();
+    const dir = s.face.clone().multiplyScalar(Math.cos(h) * Math.cos(v)).addScaledVector(right, Math.sin(h) * Math.cos(v)).add(new THREE.Vector3(0, Math.sin(v), 0));
+    return s.poster.clone().addScaledVector(dir.normalize(), lk.dist);
+  }
+  function drawLookPhones() {
+    lookPhoneGroup = new THREE.Group();
+    lookPhoneGroup.visible = showLookPhones;
+    routeGroup.add(lookPhoneGroup);
+    lookPhoneCount = 0;
+
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xe8812a, transparent: true, opacity: 0.8, depthTest: false });
+    const dotGeo = new THREE.CircleGeometry(0.07, 16).rotateX(-Math.PI / 2), dotMat = new THREE.MeshBasicMaterial({ color: 0xe8812a, transparent: true, opacity: 0.6, depthTest: false });
+    routeStops.forEach((s) => {
+      for (const lk of s.looks || []) {
+        const p = lookPhoneSpot(s, lk);
+        if (!p) continue;
+        lookPhoneCount++;
+        const phone = new THREE.Sprite(phoneIconMat());   // same size on screen at any zoom
+        phone.scale.set(0.024, 0.04, 1);
+        phone.position.copy(p);
+        phone.renderOrder = 7;
+        const floor = floorAt(p);
+        const dot = new THREE.Mesh(dotGeo, dotMat);
+        dot.position.copy(floor).setY(floor.y + 0.03);
+        dot.renderOrder = 6;
+        lookPhoneGroup.add(phone, dot,
+          new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, s.poster]), lineMat),
+          new THREE.Line(new THREE.BufferGeometry().setFromPoints([p, floor]), lineMat));
+      }
+    });
+  }
+  let phoneIcon = null;
+  function phoneIconMat() {   // an orange phone drawn once, shared by all the look markers
+    if (phoneIcon) return phoneIcon;
+    const c = document.createElement('canvas');
+    c.width = 48; c.height = 80;
+    const g = c.getContext('2d');
+    g.fillStyle = '#ffffff'; g.beginPath(); g.roundRect(2, 2, 44, 76, 10); g.fill();
+    g.fillStyle = '#e8812a'; g.beginPath(); g.roundRect(6, 6, 36, 68, 7); g.fill();
+    g.fillStyle = '#ffffff'; g.beginPath(); g.arc(24, 66, 3.5, 0, Math.PI * 2); g.fill();
+    g.fillRect(17, 11, 14, 3);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    phoneIcon = new THREE.SpriteMaterial({ map: t, depthTest: false, sizeAttenuation: false });
+    return phoneIcon;
+  }
+  function setLookPhones(on) { showLookPhones = !!on; if (lookPhoneGroup) lookPhoneGroup.visible = showLookPhones; needsRender = true; }
   // a round number badge that always faces the camera and is drawn on top
   function numberSprite(text, color) {
     text = String(text);
@@ -1344,7 +1398,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     get model() { return model; },
     get stats() { return stats; },
     suggestPlan, setPlan, showPlan, movePlanAnchor, pickPlanCentre, findRooms, selectRoom,
-    showRoute, clearRoute, playRoute,
+    showRoute, clearRoute, playRoute, setLookPhones,
     get routePlaying() { return !!routePlay; },
     get roomId() { return roomId; },
     roomAt(p) { const r = roomAt(p); return r ? r.id : null; },

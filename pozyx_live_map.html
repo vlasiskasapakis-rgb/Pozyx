@@ -232,6 +232,7 @@
         <button id="routePlay" disabled>▶ Play</button>
         <button id="routeHide" disabled>Hide</button>
       </div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:6px" title="An orange phone for every look with a distance: where the camera says the phone was (distance, left/right and up/down from the painting)"><input type="checkbox" id="routePhones" checked> Show the phone at every look (from the camera)</label>
       <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:6px" title="Where the session has Pozyx recordings, the stops are put where the visitor really stood and the meters come from the recorded walk"><input type="checkbox" id="routePozyx" checked> Use Pozyx recordings when the session has them</label>
       <p class="hint" id="routeInfo"></p>
       <div id="routeList"></div>
@@ -971,7 +972,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-07c';
+const CODE_VERSION = '2026-11-07d';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1772,6 +1773,7 @@ async function showRouteFromLooks() {
       h: aw ? withAngles.reduce((t, d) => t + d.h * d.w, 0) / aw : null, v: aw ? withAngles.reduce((t, d) => t + (d.v || 0) * d.w, 0) / aw : null } : null;
   }
   const items = stops.map(x => ({ name: x.name, seconds: x.seconds, dist: x.dist ? x.dist.avg : null, distRange: x.dist ? [x.dist.min, x.dist.max] : null,
+    looks: x.dists.filter(d => d.h != null).map(d => ({ dist: d.avg, h: d.h, v: d.v })),   // each single look, to draw the phone where it was
     angleH: x.dist ? x.dist.h : null, angleV: x.dist ? x.dist.v : null, label: clockTime(x.start).slice(0, 8) }));
   let measuredStops = 0, measuredLegs = 0;
   if ($('routePozyx').checked) {
@@ -1802,6 +1804,7 @@ async function showRouteFromLooks() {
   const res = await room.showRoute(items,
     (msg) => { $('routeInfo').textContent = msg; });
   if (!res) return;
+  room.setLookPhones($('routePhones').checked);
   $('routePlay').disabled = $('routeHide').disabled = !res.stops.length;
   $('routePlay').textContent = '▶ Play';
   const mins = (stops[stops.length - 1].end - stops[0].start) / 60000;
@@ -1814,6 +1817,7 @@ async function showRouteFromLooks() {
     `<td class="walk">${i < res.stops.length - 1 ? (x.walkMeasured ? `→ ${x.walk.toFixed(1)} m <b>measured</b>` : `→ ≈ ${x.walk.toFixed(1)} m${x.direct ? ' (straight line: no way round found)' : ' estimated'}`) : 'end'}</td></tr>`).join('') + '</table>' : '';
   const usedStops = res.stops.filter(x => x.measured).length, rejectedStops = res.stops.filter(x => x.rejected).length;
   const usedLegs = res.stops.filter(x => x.walkMeasured).length;
+  if (res.lookPhones) $('routeInfo').textContent += ` ${res.lookPhones} look${res.lookPhones === 1 ? '' : 's'} shown as an orange phone where the camera put it.`;
   if (res.stops.length && $('routePozyx').checked) $('routeInfo').textContent += measuredStops
     ? ` Pozyx: ${usedStops} of ${res.stops.length} stops placed where the visitor stood, ${usedLegs} of ${Math.max(0, res.stops.length - 1)} walks measured.` +
       (rejectedStops ? ` ${rejectedStops} Pozyx position${rejectedStops === 1 ? '' : 's'} did not fit the poster (too far or out of view) and ${rejectedStops === 1 ? 'was' : 'were'} replaced by the estimate: the tag may have lost signal then. Play that part in Saved sessions to check.` : '')
@@ -1822,6 +1826,7 @@ async function showRouteFromLooks() {
 $('routeSession').addEventListener('change', () => { routePicked = $('routeSession').value; });
 $('routeShow').onclick = () => { fillRouteSessions(); showRouteFromLooks(); };
 $('routePlay').onclick = () => { if (!room) return; const on = room.playRoute(!room.routePlaying); $('routePlay').textContent = on ? '■ Stop' : '▶ Play'; };
+$('routePhones').onchange = () => { if (room) room.setLookPhones($('routePhones').checked); };
 $('routeHide').onclick = () => { if (!room) return; room.clearRoute(); $('routeList').innerHTML = ''; $('routeInfo').textContent = ''; $('routePlay').disabled = $('routeHide').disabled = true; $('routePlay').textContent = '▶ Play'; };
 
 /* ---------- anchor planning (room_view.js draws it) ---------- */

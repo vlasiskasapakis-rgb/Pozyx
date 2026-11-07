@@ -182,7 +182,11 @@ left and positive = from the right as you face the painting, and
 the updated `supabase/schema.sql`). With the distance and the two angles the
 phone's place in front of the painting is known: Route from looks uses it to
 place a stop ("placed from the camera") when there is no fitting Pozyx
-position, for upright paintings on walls. Only paintings with a size get one; older
+position, for upright paintings on walls. **Show the phone at every look**
+(on by default) also draws an orange phone for each single look with a
+distance, where the camera puts it: at its distance, side and height from
+the painting, with a line to the painting and one down to the floor. With a
+Pozyx recording this shows both at once, to compare the camera with Pozyx. Only paintings with a size get one; older
 looks simply have none. The replay's Looks table shows it (hover for closest
 to farthest), Export JSON includes `distanceAvgM` / `distanceMinM` /
 `distanceMaxM` / `viewAngleDeg` (-1 = not measured) and `hasViewAngles` / `viewAngleHDeg` / `viewAngleVDeg`, and Route from looks
