@@ -1179,7 +1179,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     };
     routeGroups.forEach((g) => {
       const first = g.idx[0] === 0;
-      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.26, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: first ? 0x2fbf71 : ROUTE_COLOR, depthTest: false }));
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.15, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: first ? 0x2fbf71 : ROUTE_COLOR, depthTest: false }));
       disc.position.copy(lift(g.at));
       disc.renderOrder = 6;
       const num = numberSprite(nums(g.idx), first ? '#2fbf71' : '#3567d6');
@@ -1254,7 +1254,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     lookPhoneCount = 0;
 
     const lineMat = new THREE.LineBasicMaterial({ color: 0xe8812a, transparent: true, opacity: 0.8, depthTest: false });
-    const dotGeo = new THREE.CircleGeometry(0.07, 16).rotateX(-Math.PI / 2), dotMat = new THREE.MeshBasicMaterial({ color: 0xe8812a, transparent: true, opacity: 0.6, depthTest: false });
+    const dotGeo = new THREE.CircleGeometry(0.05, 16).rotateX(-Math.PI / 2), dotMat = new THREE.MeshBasicMaterial({ color: 0xe8812a, transparent: true, opacity: 0.6, depthTest: false });
     routeStops.forEach((s) => {
       for (const lk of s.looks || []) {
         const p = lookPhoneSpot(s, lk);
