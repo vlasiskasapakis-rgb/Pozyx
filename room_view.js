@@ -92,6 +92,9 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     body.position.y = 0.71;
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 14), mat);
     head.position.y = FIGURE_HEIGHT - 0.13;
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(0.2, 28, 20), mat);   // round tummy at the front (+z, like the nose)
+    belly.scale.set(1.05, 1.05, 1);
+    belly.position.set(0, 0.92, 0.1);
     const nose = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.14, 12), mat);   // shows the walking direction
     nose.rotation.x = Math.PI / 2;
     nose.position.set(0, FIGURE_HEIGHT - 0.14, 0.15);
@@ -99,7 +102,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.01;
     shadow.userData.shadow = true;
-    g.add(body, head, nose, shadow);
+    g.add(body, belly, head, nose, shadow);
     // the phone: screen towards +z, back camera looking along -z, top along +y
     const phone = new THREE.Group();
     const caseMesh = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.155, 0.009), mat);
