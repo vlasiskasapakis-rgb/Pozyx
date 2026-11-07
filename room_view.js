@@ -1313,7 +1313,10 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     return sp;
   }
   // labels that would cover each other are moved up until they are free (earlier stops keep their place)
+  let showRouteLabels = true;
+  function setRouteLabels(on) { showRouteLabels = !!on; needsRender = true; }
   function placeRouteLabels() {
+    if (!showRouteLabels) { for (const l of routeLabels) l.hidden = true; return; }
     const W = container.clientWidth, H = container.clientHeight, placed = [];
     routeGroups.forEach((s, i) => {
       const l = routeLabels[i];
@@ -1412,7 +1415,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     get model() { return model; },
     get stats() { return stats; },
     suggestPlan, setPlan, showPlan, movePlanAnchor, pickPlanCentre, findRooms, selectRoom,
-    showRoute, clearRoute, playRoute, setLookPhones,
+    showRoute, clearRoute, playRoute, setLookPhones, setRouteLabels,
     get routePlaying() { return !!routePlay; },
     get roomId() { return roomId; },
     roomAt(p) { const r = roomAt(p); return r ? r.id : null; },

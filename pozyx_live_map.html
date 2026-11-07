@@ -232,6 +232,7 @@
         <button id="routePlay" disabled>▶ Play</button>
         <button id="routeHide" disabled>Hide</button>
       </div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:6px" title="The white labels with the painting names and times (the numbers stay)"><input type="checkbox" id="routeLabelsOn" checked> Show labels</label>
       <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:6px" title="An orange phone for every look with a distance: where the camera says the phone was (distance, left/right and up/down from the painting)"><input type="checkbox" id="routePhones" checked> Show the phone at every look (from the camera)</label>
       <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:6px" title="Where the session has Pozyx recordings, the stops are put where the visitor really stood and the meters come from the recorded walk"><input type="checkbox" id="routePozyx" checked> Use Pozyx recordings when the session has them</label>
       <p class="hint" id="routeInfo"></p>
@@ -972,7 +973,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-07e';
+const CODE_VERSION = '2026-11-07f';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1805,6 +1806,7 @@ async function showRouteFromLooks() {
     (msg) => { $('routeInfo').textContent = msg; });
   if (!res) return;
   room.setLookPhones($('routePhones').checked);
+  room.setRouteLabels($('routeLabelsOn').checked);
   $('routePlay').disabled = $('routeHide').disabled = !res.stops.length;
   $('routePlay').textContent = '▶ Play';
   const mins = (stops[stops.length - 1].end - stops[0].start) / 60000;
@@ -1827,6 +1829,7 @@ $('routeSession').addEventListener('change', () => { routePicked = $('routeSessi
 $('routeShow').onclick = () => { fillRouteSessions(); showRouteFromLooks(); };
 $('routePlay').onclick = () => { if (!room) return; const on = room.playRoute(!room.routePlaying); $('routePlay').textContent = on ? '■ Stop' : '▶ Play'; };
 $('routePhones').onchange = () => { if (room) room.setLookPhones($('routePhones').checked); };
+$('routeLabelsOn').onchange = () => { if (room) room.setRouteLabels($('routeLabelsOn').checked); };
 $('routeHide').onclick = () => { if (!room) return; room.clearRoute(); $('routeList').innerHTML = ''; $('routeInfo').textContent = ''; $('routePlay').disabled = $('routeHide').disabled = true; $('routePlay').textContent = '▶ Play'; };
 
 /* ---------- anchor planning (room_view.js draws it) ---------- */
