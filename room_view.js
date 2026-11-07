@@ -1145,14 +1145,14 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     for (let i = 1; i < routePts.length; i++) {
       const a = lift(routePts[i - 1]), b = lift(routePts[i]), len = a.distanceTo(b);
       if (len < 1e-3) continue;
-      const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, len, 8), mat);
+      const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, len, 8), mat);
       tube.position.copy(a).add(b).multiplyScalar(0.5);
       tube.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
       tube.renderOrder = 5;
       routeGroup.add(tube);
       // arrows every 1.5 m show the walking direction
       for (let t = 0.75; t < len; t += 1.5) {
-        const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.26, 12), mat);
+        const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.2, 12), mat);
         arrow.position.copy(a).lerp(b, t / len);
         arrow.quaternion.copy(tube.quaternion);
         arrow.renderOrder = 5;
