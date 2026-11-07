@@ -206,7 +206,7 @@ async function send() {
   sending = true;
   renderStatus();
   while (outbox.length) {
-    const rows = outbox.slice(0, 50);
+    const rows = outbox.slice(0, 50).map(sameFields);   // also repairs looks queued by the earlier version
     try {
       await db.upsert('looks', rows, 'id', { keepalive: true });
       outbox.splice(0, rows.length);
@@ -216,7 +216,7 @@ async function send() {
     } catch (e) {
       if (saveDistance && /distance_|view_angle/.test(e.message || '')) {   // older database: save the looks without the distance
         saveDistance = false;
-        for (const r of outbox) { delete r.distance_avg_m; delete r.distance_min_m; delete r.distance_max_m; delete r.view_angle_deg; delete r.view_angle_h_deg; delete r.view_angle_v_deg; }
+        outbox.forEach(sameFields);
         flashStatus('Distance not saved: run the updated supabase/schema.sql in Supabase.');
         continue;
       }
@@ -261,6 +261,16 @@ function updateLook(idx) {
 }
 // one distance reading per frame while the look lasts (meters, with this phone's calibration)
 let saveDistance = true;   // false when the database has no distance columns yet
+const DIST_KEYS = ['distance_avg_m', 'distance_min_m', 'distance_max_m', 'view_angle_deg', 'view_angle_h_deg', 'view_angle_v_deg'];
+// Rows sent together must all have the same fields (the database refuses a mix), so every look
+// carries the distance fields, empty when not measured, or none of them on an older database
+function sameFields(r) {
+  for (const k of DIST_KEYS) {
+    if (!saveDistance) delete r[k];
+    else if (!(k in r)) r[k] = null;
+  }
+  return r;
+}
 function addDistanceSample() {
   if (!look || !dist || dist.idx !== look.idx) return;
   const t = targetsById.get(published.target_ids[look.idx]), w = t && +t.width_m;
