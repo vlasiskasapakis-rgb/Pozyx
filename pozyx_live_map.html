@@ -973,7 +973,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-07g';
+const CODE_VERSION = '2026-11-07h';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1827,7 +1827,12 @@ async function showRouteFromLooks() {
 }
 $('routeSession').addEventListener('change', () => { routePicked = $('routeSession').value; });
 $('routeShow').onclick = () => { fillRouteSessions(); showRouteFromLooks(); };
-$('routePlay').onclick = () => { if (!room) return; const on = room.playRoute(!room.routePlaying); $('routePlay').textContent = on ? '■ Stop' : '▶ Play'; };
+$('routePlay').onclick = () => {
+  if (!room) return;
+  room.onRouteEnd = () => { $('routePlay').textContent = '▶ Play'; };   // stops at the last stop
+  const on = room.playRoute(!room.routePlaying);
+  $('routePlay').textContent = on ? '■ Stop' : '▶ Play';
+};
 $('routePhones').onchange = () => { if (room) room.setLookPhones($('routePhones').checked); };
 $('routeLabelsOn').onchange = () => { if (room) room.setRouteLabels($('routeLabelsOn').checked); };
 $('routeHide').onclick = () => { if (!room) return; room.clearRoute(); $('routeList').innerHTML = ''; $('routeInfo').textContent = ''; $('routePlay').disabled = $('routeHide').disabled = true; $('routePlay').textContent = '▶ Play'; };

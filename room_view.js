@@ -1236,6 +1236,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       parent.add(m);
     }
   }
+  let onRouteEnd = null;
   let routeDot = null, showLookPhones = true, lookPhoneGroup = null, lookPhoneCount = 0;
   // Where the phone was during each single look, from the camera: the measured distance and the
   // left/right and up/down angles from the painting's centre (upright paintings on walls), drawn as a
@@ -1352,7 +1353,14 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     p.d += dt * 2;
     let left = p.d, i = 1;
     for (; i < routePts.length; i++) { const L = routePts[i].distanceTo(routePts[i - 1]); if (left <= L) break; left -= L; }
-    if (i >= routePts.length) { p.d = 0; p.stop = 0; p.wait = 1.2; p.look = routeStops[0].name; routeDot.position.copy(routePts[0]).setY(routePts[0].y + 0.25); return; }
+    if (i >= routePts.length) {   // the end: stop at the last stop (Play starts again from the first)
+      const last = routePts[routePts.length - 1];
+      routeDot.position.copy(last).setY(last.y + 0.25);
+      routePlay = null;
+      needsRender = true;
+      if (onRouteEnd) onRouteEnd();
+      return;
+    }
     const a = routePts[i - 1], b = routePts[i], L = a.distanceTo(b) || 1;
     routeDot.position.copy(a).lerp(b, left / L).setY(a.y + (b.y - a.y) * left / L + 0.25);
     // arrived at the next stop?
@@ -1417,6 +1425,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     suggestPlan, setPlan, showPlan, movePlanAnchor, pickPlanCentre, findRooms, selectRoom,
     showRoute, clearRoute, playRoute, setLookPhones, setRouteLabels,
     get routePlaying() { return !!routePlay; },
+    set onRouteEnd(fn) { onRouteEnd = fn; },
     get roomId() { return roomId; },
     roomAt(p) { const r = roomAt(p); return r ? r.id : null; },
     set onRoomClick(fn) { onRoomClick = fn; },
