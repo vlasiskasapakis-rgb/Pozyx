@@ -1068,7 +1068,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
       if (!best || room > best.room) best = { d, o, room };
     }
     const p = best.o.clone().addScaledVector(best.d, Math.max(0.3, Math.min(1.2, best.room - 0.4)));
-    return { spot: p, poster: c };
+    return { spot: p, poster: c, face: best.d.clone(), flat };
   }
   // list: [{name, seconds, label}] in visiting order. Returns what was found.
   async function showRoute(list, progress) {
@@ -1093,10 +1093,21 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
         else if (hidden) rejected = 'Pozyx put the phone where it cannot be seen';
         if (rejected) pos = null;
       }
-      const spot = pos ? floorAt(P(pos.x, pos.y, 0)) : est.spot;
+      // no (fitting) Pozyx position: the camera's distance and left/right angle put the phone in front of
+      // the painting (the painting faces out from its wall; h − from the left, + from the right)
+      let cameraSpot = null;
+      if (!pos && est && est.flat && it.dist && it.angleH != null) {   // upright paintings only (not ones lying in a case)
+        const h = it.angleH * Math.PI / 180, v = (it.angleV || 0) * Math.PI / 180;
+        const right = new THREE.Vector3(0, 1, 0).cross(est.face).normalize();
+        const out = est.face.clone().multiplyScalar(Math.cos(h)).addScaledVector(right, Math.sin(h));
+        const c = est.poster.clone().addScaledVector(out, it.dist * Math.cos(v));
+        const free = firstHit(est.poster.clone().addScaledVector(out, 0.05), out, it.dist * Math.cos(v));
+        if (free === null) cameraSpot = floorAt(c);   // only when nothing is in between (a wall, a case)
+      }
+      const spot = pos ? floorAt(P(pos.x, pos.y, 0)) : cameraSpot || est.spot;
       const k = navNearest(spot);
       const poster = est ? est.poster : spot.clone().setY(spot.y + 1.5);
-      stops.push({ ...it, poster, k, measured: !!pos, rejected, at: pos || k === null ? floorAt(new THREE.Vector3(spot.x, planFloorY, spot.z)) : navPoint(k) });
+      stops.push({ ...it, poster, k, measured: !!pos, cameraPlaced: !!cameraSpot, rejected, at: pos || cameraSpot || k === null ? floorAt(new THREE.Vector3(spot.x, planFloorY, spot.z)) : navPoint(k) });
     }
     // the walk, stop by stop
     const pts = [], legs = [];
@@ -1126,7 +1137,7 @@ export function createRoomView(container, getState, initialQuality = 'balanced')
     drawRoute();
     const groupOf = new Map();
     routeGroups.forEach((g, n) => g.idx.forEach(i => groupOf.set(i, g.idx)));
-    return { stops: stops.map((s, i) => ({ rejected: s.rejected || '', dist: s.dist || null, distRange: s.distRange || null, sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
+    return { stops: stops.map((s, i) => ({ rejected: s.rejected || '', dist: s.dist || null, distRange: s.distRange || null, angleH: s.angleH, angleV: s.angleV, cameraPlaced: !!s.cameraPlaced, sameSpotAs: (groupOf.get(i) || [i])[0] !== i ? groupOf.get(i)[0] + 1 : 0, name: s.name, label: s.label, seconds: s.seconds, walk: s.walk || 0, direct: !!s.direct, walkMeasured: !!s.walkMeasured, measured: s.measured })), missing, total: routeLen };
   }
   function drawRoute() {
     const mat = new THREE.MeshBasicMaterial({ color: ROUTE_COLOR, transparent: true, opacity: 0.85, depthTest: false });

@@ -939,7 +939,7 @@ function prepareLooks(data, shift) {
       const note = lk.outside || (lk.other ? `session: ${lk.other}` : '');
       h += `<tr${lk.outside ? ' class="outside"' : ` data-i="${i}"`}><td>${esc(lk.name)}</td><td><span class="modechip ${lk.modeKey}">${esc(lk.mode)}</span></td><td class="num">${clockTime(lk.unix).slice(0, 8)}</td>` +
         `<td class="num">${lk.a.toFixed(2)}</td><td class="num">${(lk.b - lk.a).toFixed(1)} s</td>` +
-        `<td class="num" title="${lk.dist ? `${lk.dist.min.toFixed(2)}–${lk.dist.max.toFixed(2)} m${lk.dist.angle != null ? `, ${lk.dist.angle}° to the side` : ''}` : 'not measured'}">${lk.dist ? lk.dist.avg.toFixed(1) + ' m' : '–'}</td><td class="note">${esc(note)}</td></tr>`;
+        `<td class="num" title="${lk.dist ? `${lk.dist.min.toFixed(2)}–${lk.dist.max.toFixed(2)} m${lk.dist.h != null ? `, ${sideText(lk.dist.h, lk.dist.v)}` : lk.dist.angle != null ? `, ${lk.dist.angle}° to the side` : ''}` : 'not measured'}">${lk.dist ? lk.dist.avg.toFixed(1) + ' m' : '–'}</td><td class="note">${esc(note)}</td></tr>`;
     });
     h += '</table>';
   }
@@ -970,7 +970,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-07a';
+const CODE_VERSION = '2026-11-07b';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1205,7 +1205,8 @@ async function loadRecording(r, sid) {
     looks: lookRows && lookRows.length ? lookRows.map(lk => ({
       a0: (+lk.start_unix_ms - start) / 1000, b0: (+lk.end_unix_ms - start) / 1000, unix: +lk.start_unix_ms,
       name: lk.target_name || 'image', target_id: lk.target_id, modeKey: lk.mode || 'generic',
-      dist: lk.distance_avg_m != null ? { avg: +lk.distance_avg_m, min: +lk.distance_min_m, max: +lk.distance_max_m, angle: lk.view_angle_deg != null ? +lk.view_angle_deg : null } : null,
+      dist: lk.distance_avg_m != null ? { avg: +lk.distance_avg_m, min: +lk.distance_min_m, max: +lk.distance_max_m, angle: lk.view_angle_deg != null ? +lk.view_angle_deg : null,
+        h: lk.view_angle_h_deg != null ? +lk.view_angle_h_deg : null, v: lk.view_angle_v_deg != null ? +lk.view_angle_v_deg : null } : null,
       mode: lk.mode === 'ai' ? 'AI assisted' : lk.mode === 'generic' ? 'Generic' : '', other: (lk.session_id || '') === sid ? null : (lk.session_name || 'No session'),
     })) : null,
     poses,
@@ -1260,6 +1261,8 @@ function exportSession(data, shift) {
       // distance from the phone to the painting in meters; -1 = not measured
       distanceAvgM: lk.dist ? lk.dist.avg : -1, distanceMinM: lk.dist ? lk.dist.min : -1, distanceMaxM: lk.dist ? lk.dist.max : -1,
       viewAngleDeg: lk.dist && lk.dist.angle != null ? lk.dist.angle : -1,
+      // signed angles (0 when not measured, see hasViewAngles): left/right − from the left, + from the right; up/down + above, − below
+      hasViewAngles: !!(lk.dist && lk.dist.h != null), viewAngleHDeg: lk.dist && lk.dist.h != null ? lk.dist.h : 0, viewAngleVDeg: lk.dist && lk.dist.v != null ? lk.dist.v : 0,
     })),
     taps: taps.map(({ tp, t }) => ({ t: r3(t), label: tp.label || '', unixMs: tp.unix_ms || 0 })),
     xAxisHeading: xAxisHeading === null ? -1 : xAxisHeading,   // -1 = compass not set up
@@ -1636,6 +1639,11 @@ function compassFromReadings() {
     `. The two readings agree within ${Math.round(fit.err)}°` + (fit.err > 25 ? ': that is a lot, metal nearby may disturb the compass; try again away from it.' : '.');
 }
 
+// "20° from the left · 5° above" (h: − left, + right as you face the painting; v: + above, − below)
+function sideText(h, v) {
+  const lr = Math.abs(h) < 5 ? 'straight on' : `${Math.round(Math.abs(h))}° from the ${h < 0 ? 'left' : 'right'}`;
+  return lr + (v != null && Math.abs(v) >= 5 ? ` · ${Math.round(Math.abs(v))}° ${v > 0 ? 'above' : 'below'}` : '');
+}
 /* ---------- route from looks (room_view.js draws it) ---------- */
 // The visitor's walk rebuilt only from the posters scanned in the AR viewer (table looks), so it
 // works without any Pozyx recording.
@@ -1654,7 +1662,8 @@ function routeStopsFrom(rows) {
   for (const r of rows) {
     const a = +r.start_unix_ms, b = +r.end_unix_ms, name = r.target_name || '';
     if (!name || !(b > a)) continue;
-    const d = r.distance_avg_m != null ? { avg: +r.distance_avg_m, min: +r.distance_min_m, max: +r.distance_max_m, w: (b - a) / 1000 } : null;
+    const d = r.distance_avg_m != null ? { avg: +r.distance_avg_m, min: +r.distance_min_m, max: +r.distance_max_m, w: (b - a) / 1000,
+      h: r.view_angle_h_deg != null ? +r.view_angle_h_deg : null, v: r.view_angle_v_deg != null ? +r.view_angle_v_deg : null } : null;
     const last = stops[stops.length - 1];
     if (last && last.name === name && a - last.end < 15000) {
       last.end = Math.max(last.end, b); last.seconds += (b - a) / 1000;
@@ -1721,9 +1730,12 @@ async function showRouteFromLooks() {
   // distance to the painting, when the AR viewer measured it (time-weighted over merged looks)
   for (const x of stops) {
     const tw = x.dists.reduce((t, d) => t + d.w, 0);
-    x.dist = tw ? { avg: x.dists.reduce((t, d) => t + d.avg * d.w, 0) / tw, min: Math.min(...x.dists.map(d => d.min)), max: Math.max(...x.dists.map(d => d.max)) } : null;
+    const withAngles = x.dists.filter(d => d.h != null), aw = withAngles.reduce((t, d) => t + d.w, 0);
+    x.dist = tw ? { avg: x.dists.reduce((t, d) => t + d.avg * d.w, 0) / tw, min: Math.min(...x.dists.map(d => d.min)), max: Math.max(...x.dists.map(d => d.max)),
+      h: aw ? withAngles.reduce((t, d) => t + d.h * d.w, 0) / aw : null, v: aw ? withAngles.reduce((t, d) => t + (d.v || 0) * d.w, 0) / aw : null } : null;
   }
-  const items = stops.map(x => ({ name: x.name, seconds: x.seconds, dist: x.dist ? x.dist.avg : null, distRange: x.dist ? [x.dist.min, x.dist.max] : null, label: clockTime(x.start).slice(0, 8) }));
+  const items = stops.map(x => ({ name: x.name, seconds: x.seconds, dist: x.dist ? x.dist.avg : null, distRange: x.dist ? [x.dist.min, x.dist.max] : null,
+    angleH: x.dist ? x.dist.h : null, angleV: x.dist ? x.dist.v : null, label: clockTime(x.start).slice(0, 8) }));
   let measuredStops = 0, measuredLegs = 0;
   if ($('routePozyx').checked) {
     let track = null;
@@ -1761,7 +1773,7 @@ async function showRouteFromLooks() {
       (res.missing.length ? ` Not found in the model (left out): ${[...new Set(res.missing)].join(', ')}.` : '')
     : `None of the scanned posters were found in the model: ${[...new Set(res.missing)].join(', ')}. Name their materials or textures like the AR images.`;
   $('routeList').innerHTML = res.stops.length ? '<table>' + res.stops.map((x, i) =>
-    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s${x.dist ? ` · ${x.dist.toFixed(1)} m away (${x.distRange[0].toFixed(1)}–${x.distRange[1].toFixed(1)})` : ''}${x.sameSpotAs ? ` · same spot as ${x.sameSpotAs}` : ''}${x.rejected ? `<br><span style="color:var(--tap)">${esc(x.rejected)}: placed in front of it instead</span>` : ''}</span></td>` +
+    `<tr><td>${i + 1}</td><td><b>${esc(x.name)}</b><br><span class="hint" style="margin:0">${esc(x.label)} · looked ${Math.round(x.seconds)} s${x.dist ? ` · ${x.dist.toFixed(1)} m away (${x.distRange[0].toFixed(1)}–${x.distRange[1].toFixed(1)})${x.angleH != null ? `, ${sideText(x.angleH, x.angleV)}` : ''}` : ''}${x.cameraPlaced ? ' · placed from the camera' : ''}${x.sameSpotAs ? ` · same spot as ${x.sameSpotAs}` : ''}${x.rejected ? `<br><span style="color:var(--tap)">${esc(x.rejected)}: ${x.cameraPlaced ? 'placed from the camera' : 'placed in front of it'} instead</span>` : ''}</span></td>` +
     `<td class="walk">${i < res.stops.length - 1 ? (x.walkMeasured ? `→ ${x.walk.toFixed(1)} m <b>measured</b>` : `→ ≈ ${x.walk.toFixed(1)} m${x.direct ? ' (straight line: no way round found)' : ' estimated'}`) : 'end'}</td></tr>`).join('') + '</table>' : '';
   const usedStops = res.stops.filter(x => x.measured).length, rejectedStops = res.stops.filter(x => x.rejected).length;
   const usedLegs = res.stops.filter(x => x.walkMeasured).length;

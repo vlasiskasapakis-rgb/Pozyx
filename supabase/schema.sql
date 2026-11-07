@@ -312,6 +312,11 @@ alter table looks add column if not exists distance_avg_m real;
 alter table looks add column if not exists distance_min_m real;
 alter table looks add column if not exists distance_max_m real;
 alter table looks add column if not exists view_angle_deg real;
+-- the same angle split in two, to place the phone in front of the painting: left/right
+-- (negative = from the left, positive = from the right, as you face the painting) and up/down
+-- (positive = phone above the painting's centre, negative = below)
+alter table looks add column if not exists view_angle_h_deg real;
+alter table looks add column if not exists view_angle_v_deg real;
 
 -- Make the API notice new tables and columns straight away
 notify pgrst, 'reload schema';

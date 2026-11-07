@@ -175,11 +175,17 @@ measure the real distance with a tape, enter it, and the phone keeps that
 correction (enter 0 to undo).
 
 Each look is saved with the distance during it (`looks.distance_avg_m`,
-`distance_min_m`, `distance_max_m`, and `view_angle_deg`, 0 = straight on; run
-the updated `supabase/schema.sql`). Only paintings with a size get one; older
+`distance_min_m`, `distance_max_m`, `view_angle_deg` = 0 straight on, and the
+same angle split in two: `view_angle_h_deg` left/right, negative = from the
+left and positive = from the right as you face the painting, and
+`view_angle_v_deg` up/down, positive = phone above the painting's centre; run
+the updated `supabase/schema.sql`). With the distance and the two angles the
+phone's place in front of the painting is known: Route from looks uses it to
+place a stop ("placed from the camera") when there is no fitting Pozyx
+position, for upright paintings on walls. Only paintings with a size get one; older
 looks simply have none. The replay's Looks table shows it (hover for closest
 to farthest), Export JSON includes `distanceAvgM` / `distanceMinM` /
-`distanceMaxM` / `viewAngleDeg` (-1 = not measured), and Route from looks
+`distanceMaxM` / `viewAngleDeg` (-1 = not measured) and `hasViewAngles` / `viewAngleHDeg` / `viewAngleVDeg`, and Route from looks
 shows "1.4 m away" per stop.
 
 ## 6. Room view (3D model of the space)

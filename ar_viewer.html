@@ -216,7 +216,7 @@ async function send() {
     } catch (e) {
       if (saveDistance && /distance_|view_angle/.test(e.message || '')) {   // older database: save the looks without the distance
         saveDistance = false;
-        for (const r of outbox) { delete r.distance_avg_m; delete r.distance_min_m; delete r.distance_max_m; delete r.view_angle_deg; }
+        for (const r of outbox) { delete r.distance_avg_m; delete r.distance_min_m; delete r.distance_max_m; delete r.view_angle_deg; delete r.view_angle_h_deg; delete r.view_angle_v_deg; }
         flashStatus('Distance not saved: run the updated supabase/schema.sql in Supabase.');
         continue;
       }
@@ -257,7 +257,7 @@ function updateLook(idx) {
   if (look && idx === look.idx) { look.last = t; return; }
   if (look && idx !== null) { finishLook(look, t); look = null; }            // moved straight to another image
   else if (look && t - look.last > GRACE_MS) { finishLook(look, look.last); look = null; }
-  if (!look && idx !== null) look = { idx, start: t, last: t, mode, dsum: 0, asum: 0, dn: 0, dmin: Infinity, dmax: 0 };
+  if (!look && idx !== null) look = { idx, start: t, last: t, mode, dsum: 0, asum: 0, hsum: 0, vsum: 0, dn: 0, dmin: Infinity, dmax: 0 };
 }
 // one distance reading per frame while the look lasts (meters, with this phone's calibration)
 let saveDistance = true;   // false when the database has no distance columns yet
@@ -266,7 +266,7 @@ function addDistanceSample() {
   const t = targetsById.get(published.target_ids[look.idx]), w = t && +t.width_m;
   if (!w) return;
   const m = dist.widths * w * distScale;
-  look.dsum += m; look.asum += dist.angle; look.dn++;
+  look.dsum += m; look.asum += dist.angle; look.hsum += dist.h; look.vsum += dist.v; look.dn++;
   look.dmin = Math.min(look.dmin, m); look.dmax = Math.max(look.dmax, m);
 }
 function finishLook(l, end) {
@@ -282,6 +282,8 @@ function finishLook(l, end) {
     row.distance_min_m = Math.round(l.dmin * 100) / 100;
     row.distance_max_m = Math.round(l.dmax * 100) / 100;
     row.view_angle_deg = Math.round(l.asum / l.dn);
+    row.view_angle_h_deg = Math.round(l.hsum / l.dn);   // − from the left, + from the right
+    row.view_angle_v_deg = Math.round(l.vsum / l.dn);   // + phone above the centre, − below
   }
   recent.unshift({ name: target.name, mode: l.mode, start: row.start_unix_ms, ms: row.end_unix_ms - row.start_unix_ms, dist: row.distance_avg_m });
   recent = recent.slice(0, 20);
@@ -460,27 +462,40 @@ function glide(dt) {
    centre in image widths is |position| / scale of its anchor; times the painting's real width
    (Painting sizes in the AR editor) gives meters. The angle is between the painting's facing
    direction and the line to the phone (0° = straight on). */
-let dist = null;   // { idx, widths, angle } smoothed
+let dist = null;   // { idx, widths, angle, h, v } smoothed
 let distScale = (() => { try { return +localStorage.getItem('arviewer.distScale') || 1; } catch (e) { return 1; } })();
-const dPos = new THREE.Vector3(), dRot = new THREE.Quaternion(), dScl = new THREE.Vector3(), dN = new THREE.Vector3();
+const dInv = new THREE.Matrix4(), dCam = new THREE.Vector3();
+// The phone seen from the painting: the camera's position in the painting's own frame (x to the right
+// as you face it, y up, z out of the picture, 1 = the painting's width).
+// h: left/right angle, negative = from the left, positive = from the right (as you face the painting)
+// v: up/down angle, positive = phone above the painting's centre, negative = below
+// angle: total angle off straight-on
 function measureDistance(idx, dt) {
   const a = idx === null ? null : arAnchors[idx];
   if (!a || !a.anchor.group.visible) { dist = null; return; }
-  a.anchor.group.matrixWorld.decompose(dPos, dRot, dScl);
-  if (!(dScl.x > 0)) return;
-  const widths = dPos.length() / dScl.x;
-  dN.set(0, 0, 1).applyQuaternion(dRot);
-  const angle = Math.acos(Math.max(-1, Math.min(1, dN.dot(dPos.clone().negate().normalize())))) * 180 / Math.PI;
+  const m = a.anchor.group.matrixWorld;
+  if (!(Math.abs(m.determinant()) > 0)) return;
+  dCam.set(0, 0, 0).applyMatrix4(dInv.copy(m).invert());
+  const widths = dCam.length();
+  if (!(widths > 0) || dCam.z <= 0) return;   // behind the picture: a bad reading
+  const h = Math.atan2(dCam.x, dCam.z) * 180 / Math.PI;
+  const v = Math.atan2(dCam.y, Math.hypot(dCam.x, dCam.z)) * 180 / Math.PI;
+  const angle = Math.acos(Math.min(1, dCam.z / widths)) * 180 / Math.PI;
   const k = 1 - Math.exp(-dt / 0.4);   // about half a second of averaging: steadier numbers
-  if (!dist || dist.idx !== idx) dist = { idx, widths, angle };
-  else { dist.widths += (widths - dist.widths) * k; dist.angle += (angle - dist.angle) * k; }
+  if (!dist || dist.idx !== idx) dist = { idx, widths, angle, h, v };
+  else { dist.widths += (widths - dist.widths) * k; dist.angle += (angle - dist.angle) * k; dist.h += (h - dist.h) * k; dist.v += (v - dist.v) * k; }
+}
+function sideText(h, v) {
+  const lr = Math.abs(h) < 5 ? 'straight on' : `${Math.round(Math.abs(h))}° from the ${h < 0 ? 'left' : 'right'}`;
+  const ud = Math.abs(v) < 5 ? '' : ` · ${Math.round(Math.abs(v))}° ${v > 0 ? 'above' : 'below'}`;
+  return lr + ud;
 }
 function renderDistance() {
   const el = $('distNow');
   if (!dist) { el.hidden = true; return; }
   const t = targetsById.get(published.target_ids[dist.idx]);
   const w = t && +t.width_m;
-  const side = dist.angle < 10 ? 'straight on' : `${Math.round(dist.angle)}° to the side`;
+  const side = sideText(dist.h, dist.v);
   el.hidden = false;
   el.innerHTML = w
     ? `<b>${(dist.widths * w * distScale).toFixed(2)} m</b> from ${esc(t.name)} · ${side}<small>painting ${Math.round(w * 100)} cm wide${distScale !== 1 ? ` · calibrated ×${distScale.toFixed(2)}` : ''} · saved with the look</small>`
