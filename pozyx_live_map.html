@@ -973,7 +973,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-07m';
+const CODE_VERSION = '2026-11-08a';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1114,7 +1114,8 @@ async function loadSessionLooks(sid) {
   if (!rows.length) { box.innerHTML = '<div class="empty">No AR looks in this session yet.</div>'; return; }
   const withDist = rows.filter(r => r.distance_avg_m != null).length;
   box.innerHTML = `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px"><b style="flex:1">${rows.length} AR look${rows.length === 1 ? '' : 's'}` +
-    `${withDist ? ` · ${withDist} with distance` : ''}</b><button id="dbRoute" class="primary">Show route</button></div>` +
+    `${withDist ? ` · ${withDist} with distance` : ''}</b><button id="dbRoute" class="primary">Show route</button>` +
+    `<button id="dbLooksJson" title="Download every look of this session as JSON (with distances, angles and phone movement where saved)">Export looks JSON</button></div>` +
     '<table style="width:100%; font-size:13px; font-variant-numeric:tabular-nums">' +
     '<tr><th style="text-align:left">Time</th><th style="text-align:left">Image</th><th>Length</th><th>Distance</th></tr>' +
     rows.map(r => `<tr><td>${clockTime(+r.start_unix_ms).slice(0, 8)}</td><td>${esc(r.target_name || '')}${r.mode === 'ai' ? ' · AI' : ''}</td>` +
@@ -1123,6 +1124,32 @@ async function loadSessionLooks(sid) {
       `${r.distance_avg_m != null ? `${(+r.distance_avg_m).toFixed(1)} m${r.view_angle_h_deg != null ? `<br><small>${esc(sideText(+r.view_angle_h_deg, r.view_angle_v_deg != null ? +r.view_angle_v_deg : null))}</small>` : ''}` : '–'}</td></tr>`).join('') +
     '</table>';
   $('dbRoute').onclick = () => openRouteFor(sid);
+  $('dbLooksJson').onclick = () => exportLooksJson(sid, rows);
+}
+// All the looks of a session as JSON, with or without a Pozyx recording. Times are unix ms (server
+// clock); distances in meters and angles in degrees, -1 when not measured (older looks, paintings
+// without a size); path = the phone's movement during the look (newer looks), t in seconds.
+function exportLooksJson(sid, rows) {
+  const ses = dbSessions.find(x => x.id === sid);
+  const name = ses ? ses.name : 'No session';
+  const num = (v) => v == null || !Number.isFinite(+v) ? -1 : +v;
+  const out = {
+    format: 'pozyx-looks', version: 1, exportedAtUnixMs: Date.now(),
+    session: { id: sid || '', name },
+    angles: 'viewAngleHDeg: negative = phone to the left of the painting, positive = to the right (as you face it); viewAngleVDeg: positive = phone above the painting centre, negative = below; viewAngleDeg: total angle off straight on',
+    looks: rows.map(r => ({
+      image: r.target_name || '', imageId: r.target_id || '', mode: r.mode || 'generic',
+      startUnixMs: +r.start_unix_ms, endUnixMs: +r.end_unix_ms, start: isoLocal(+r.start_unix_ms),
+      duration: Math.round(+r.end_unix_ms - +r.start_unix_ms) / 1000,
+      distanceAvgM: num(r.distance_avg_m), distanceMinM: num(r.distance_min_m), distanceMaxM: num(r.distance_max_m),
+      viewAngleDeg: num(r.view_angle_deg),
+      hasViewAngles: r.view_angle_h_deg != null, viewAngleHDeg: r.view_angle_h_deg != null ? +r.view_angle_h_deg : 0, viewAngleVDeg: r.view_angle_v_deg != null ? +r.view_angle_v_deg : 0,
+      path: Array.isArray(r.path) ? r.path.map(q => ({ t: q.t / 1000, distanceM: q.d, angleHDeg: q.h, angleVDeg: q.v })) : [],
+    })),
+  };
+  const safe = (v) => String(v).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'session';
+  download(`${safe(name)}_looks.json`, JSON.stringify(out, null, 1), 'application/json');
+  setStatus(`Exported ${out.looks.length} look${out.looks.length === 1 ? '' : 's'} of "${name}".`);
 }
 // Room view with this session's route (waits for the room model to load)
 async function openRouteFor(sid) {

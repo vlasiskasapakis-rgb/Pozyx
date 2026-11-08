@@ -192,7 +192,16 @@ Looks saved from now on also keep the phone's movement during the look
 `supabase/schema.sql`). The route draws it as a thin orange trail at each
 phone, and **▶ Play** re-enacts it: at each stop a phone moves the way the
 real one did (3 times faster, 1.5–8 s) before walking on. Older looks have no
-movement and show exactly as before. Only paintings with a size get one; older
+movement and show exactly as before.
+
+**Saved sessions** lists the session's AR looks under its recordings (with or
+without a Pozyx recording), with **Show route** and **Export looks JSON**. The
+looks file (`<session>_looks.json`, format `pozyx-looks`) has one entry per
+look: image, mode, start/end (unix ms and local time), duration,
+`distanceAvgM` / `distanceMinM` / `distanceMaxM`, `viewAngleDeg`,
+`hasViewAngles` / `viewAngleHDeg` / `viewAngleVDeg` (-1 or false when not
+measured) and `path`, the phone's movement during the look (`t` in seconds,
+`distanceM`, `angleHDeg`, `angleVDeg`; empty for older looks). Only paintings with a size get one; older
 looks simply have none. The replay's Looks table shows it (hover for closest
 to farthest), Export JSON includes `distanceAvgM` / `distanceMinM` /
 `distanceMaxM` / `viewAngleDeg` (-1 = not measured) and `hasViewAngles` / `viewAngleHDeg` / `viewAngleVDeg`, and Route from looks
