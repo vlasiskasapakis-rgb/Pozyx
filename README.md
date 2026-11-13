@@ -295,6 +295,28 @@ phone taps; live and in replays. Needs the updated `supabase/schema.sql`
    The panel warns when two anchors are more than 15 m apart. If the model
    has no closed rooms, the whole model is planned as one space.
 
+## Analysis (visitor behaviour)
+
+**Analysis** in the live map's top bar opens a summary of how visitors behaved,
+for one session, the looks without a session, or **All sessions** together.
+It uses the AR looks (and, for one session, its Pozyx recording):
+
+- **Figures:** visit length, paintings looked at (of all published), number of
+  looks, time spent looking, quick glances (under 2 s), engaged looks (10 s or
+  more), typical and closest distance, share of AI assisted content, and the
+  metres walked when the session has a Pozyx recording.
+- **What stood out:** longest look, most time, paintings the visitor came back
+  to, the usual time between looks, from which side they looked, and how often
+  they stepped closer during a look.
+- **Timeline:** one row per painting, one bar per look (Generic or AI assisted).
+- **Time at each painting** and **Where visitors stood**: every measured look as
+  a dot at its distance and side in front of a painting, seen from above.
+- **Paintings table** (also **Export CSV**): looks, total and average time,
+  distance, closest, side, visits, came back, AI assisted.
+
+Looks saved before distances existed still count; they just have no distance
+or side.
+
 ## 7. Phone direction
 
 The AR viewer reads the phone's own orientation sensors (compass-based) about

@@ -152,6 +152,7 @@
   <button id="btnOpen">Open recording</button>
   <input type="file" id="fileOpen" accept=".json,.csv" hidden>
   <button id="btnOpenDb" hidden title="Replay a recording from the database, with the phone taps">Saved sessions</button>
+  <button id="btnAnalysis" hidden title="How visitors behaved: what they looked at, for how long, from where">Analysis</button>
   <label><input type="checkbox" id="chkSmooth" checked> Smoothing</label>
   <label><input type="checkbox" id="chkTrail" checked> Trails</label>
   <div id="status" class="status">Not connected. Close the Arduino IDE Serial Monitor first, then click Connect (Chrome or Edge).</div>
@@ -328,6 +329,16 @@
       <input type="number" id="exportHeight" step="0.1" value="1" style="width:70px; font:inherit; padding:5px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text)"> m</label>
     <button id="btnDbClose">Close</button>
   </div>
+</dialog>
+
+<dialog id="anDialog" style="width:min(1200px, calc(100vw - 32px)); max-height:calc(100vh - 32px)">
+  <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px">
+    <h2 style="margin:0; flex:1; min-width:160px">Visitor behaviour</h2>
+    <label style="display:flex; align-items:center; gap:6px; font-size:13px">Session <select id="anSession"></select></label>
+    <button id="anCsv" title="The paintings table as a spreadsheet file">Export CSV</button>
+    <button id="anClose">Close</button>
+  </div>
+  <div id="anBody"><div class="empty">Loading…</div></div>
 </dialog>
 
 <script src="pozyx_db.js"></script>
@@ -694,7 +705,7 @@ async function loadSessions() {
 }
 function renderSessions() {
   const sel = $('sessionSel');
-  sel.hidden = $('btnNewSession').hidden = $('btnOpenDb').hidden = $('btnRoom').hidden = !hasDb();
+  sel.hidden = $('btnNewSession').hidden = $('btnOpenDb').hidden = $('btnRoom').hidden = $('btnAnalysis').hidden = !hasDb();
   let h = '<option value="">No session</option>';
   for (const x of dbSessions) h += `<option value="${esc(x.id)}">${esc(x.name)}</option>`;
   sel.innerHTML = h;
@@ -973,7 +984,7 @@ function renderLookNow() {
 const MODE_NAMES = { generic: 'Generic', ai: 'AI assisted' };
 let arMod = null, arContent = null, arLoadedAt = 0, viewKey = '';
 // Change this when room_view.js or ar_scene.js change, so browsers load the matching versions
-const CODE_VERSION = '2026-11-08a';
+const CODE_VERSION = '2026-11-13a';
 let arContentError = '';
 async function loadArContent() {
   if (arContent && Date.now() - arLoadedAt < 60000) return arContent;
@@ -1710,6 +1721,57 @@ function sideText(h, v) {
   const lr = Math.abs(h) < 5 ? 'straight on' : `${Math.round(Math.abs(h))}° from the ${h < 0 ? 'left' : 'right'}`;
   return lr + (v != null && Math.abs(v) >= 5 ? ` · ${Math.round(Math.abs(v))}° ${v > 0 ? 'above' : 'below'}` : '');
 }
+/* ---------- Analysis: visitor behaviour from the AR looks (analysis.js does the work) ---------- */
+let anMod = null, anResult = null, anRun = 0;
+async function loadAllLooks(sid) {   // sid: a session id, '' = no session, '*' = every session
+  const filter = sid === '*' ? '' : `&${sessionFilter(sid)}`, rows = [];
+  for (let off = 0; ; off += 1000) {
+    const page = await pozyxDb.request(`looks?select=*${filter}&order=start_unix_ms.asc&limit=1000&offset=${off}`);
+    rows.push(...page);
+    if (page.length < 1000) break;
+  }
+  return rows;
+}
+async function openAnalysis() {
+  const sel = $('anSession'), keep = sel.value;
+  const cur = (replay.active && replay.data.meta && replay.data.meta.sessionId) || sessionId;
+  sel.innerHTML = '<option value="*">All sessions</option>' + dbSessions.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('') +
+    '<option value="">Looks without a session</option>';
+  sel.value = keep && [...sel.options].some(o => o.value === keep) ? keep : (cur || (dbSessions[0] && dbSessions[0].id) || '*');
+  $('anDialog').showModal();
+  runAnalysis();
+}
+async function runAnalysis() {
+  const run = ++anRun, sid = $('anSession').value;
+  $('anBody').innerHTML = '<div class="empty">Loading the looks…</div>';
+  try {
+    anMod = anMod || await import('./analysis.js?v=' + CODE_VERSION);
+    const rows = await loadAllLooks(sid);
+    let totalPaintings = null, walked = null;
+    try { totalPaintings = (await pozyxDb.request('ar_published?select=target_ids&id=eq.current'))[0]?.target_ids?.length ?? null; } catch (e) {}
+    if (sid && sid !== '*' && rows.length) {   // a Pozyx recording of this session: how far the visitor walked
+      try {
+        const track = await pozyxTrackFor(sid, +rows[0].start_unix_ms - 5000, Math.max(...rows.map(r => +r.end_unix_ms)) + 5000);
+        if (track && track.length > 1) walked = walkedMeters(track);
+      } catch (e) {}
+    }
+    if (run !== anRun) return;
+    anResult = anMod.analyzeLooks(rows, { totalPaintings, walked });
+    anMod.renderAnalysis($('anBody'), anResult);
+  } catch (e) {
+    if (run === anRun) $('anBody').innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`;
+  }
+}
+$('btnAnalysis').onclick = openAnalysis;
+$('anSession').onchange = runAnalysis;
+$('anClose').onclick = () => $('anDialog').close();
+$('anCsv').onclick = () => {
+  if (!anMod || !anResult || anResult.empty) return;
+  const o = $('anSession').selectedOptions[0];
+  const name = String(o ? o.textContent : 'session').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'session';
+  download(`${name}_paintings.csv`, anMod.analysisCsv(anResult), 'text/csv');
+};
+
 /* ---------- route from looks (room_view.js draws it) ---------- */
 // The visitor's walk rebuilt only from the posters scanned in the AR viewer (table looks), so it
 // works without any Pozyx recording.
